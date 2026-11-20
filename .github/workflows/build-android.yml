@@ -45,10 +45,12 @@ jobs:
           curl -fL -o godot.zip     "$BASE/Godot_v${GODOT_VERSION}-stable_linux_headless.64.zip" || \
             curl -fL -o godot.zip   "$BASE/Godot_v${GODOT_VERSION}-stable_x11.64.zip"
           curl -fL -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-          unzip -q godot.zip
-          mv Godot_v${GODOT_VERSION}-stable_* "$PWD/godot_bin" 2>/dev/null || true
-          GODOT_BIN="$(ls "$PWD"/Godot_v* "$PWD/godot_bin" 2>/dev/null | head -1)"
+          mkdir -p "$HOME/godot" godot_unzip
+          unzip -q godot.zip -d godot_unzip
+          GODOT_BIN="$HOME/godot/godot"
+          mv "$(find godot_unzip -maxdepth 1 -type f -name 'Godot_v*' | head -1)" "$GODOT_BIN"
           chmod +x "$GODOT_BIN"
+          rm -rf godot_unzip godot.zip
           TPL="$HOME/.local/share/godot/templates/${GODOT_VERSION}.stable"
           mkdir -p "$TPL"
           unzip -q templates.tpz -d tpl
