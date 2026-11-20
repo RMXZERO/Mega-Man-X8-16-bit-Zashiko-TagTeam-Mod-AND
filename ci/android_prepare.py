@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Android(APK) 빌드 전처리 (멱등). 저장소 루트에서 실행.
 
-- ios_prepare.py 의 공용 패치를 재사용 (iOS 전용 패치는 쓰지 않음)
+- 단독 실행 (ios_prepare.py 필요 없음)
   1) project.godot : ETC / ETC2 텍스처 임포트 활성화 (Android 필수)
   2) ko-assets/    : 한글 번역/폰트 적용 + 번역 목록에 ko 추가
   3) 태그팀 폰트 이름 맞춤
@@ -12,10 +12,80 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ios_prepare as p  # __main__ 가드가 있어 import 만으로는 실행되지 않음
+import shutil
 
-PACKAGE = os.environ.get("ANDROID_PACKAGE", "com.mmx8.zashiko")
+
+def _read(path):
+    with open(path, "r", encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def _write(path, text):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def _sub(path, old, new, label):
+    """정확히 한 번 나오는 문자열을 바꿈 (이미 적용됐으면 건너뜀)."""
+    src = _read(path)
+    nl = "\r\n" if "\r\n" in src else "\n"
+    old = old.replace("\n", nl)
+    new = new.replace("\n", nl)
+    if new in src:
+        print(f"[skip] {path}: {label} (이미 적용됨)")
+        return
+    if src.count(old) != 1:
+        print(f"[warn] {path}: {label} 위치를 찾지 못함 ({src.count(old)}곳)")
+        return
+    _write(path, src.replace(old, new))
+    print(f"[ok]   {path}: {label}")
+
+
+def apply_korean():
+    root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ko-assets"))
+    if not os.path.isdir(root):
+        print("[skip] ko-assets/ 없음 (한국어 미적용)")
+        return
+    n = 0
+    for base, _, files in os.walk(root):
+        for name in files:
+            src = os.path.join(base, name)
+            rel = os.path.relpath(src, root)
+            os.makedirs(os.path.dirname(rel) or ".", exist_ok=True)
+            shutil.copyfile(src, rel)
+            n += 1
+    print(f"[ok]   ko-assets: {n}개 파일 복사")
+    src = _read("project.godot")
+    ko = "res://src/Localization/real_translations.ko.translation"
+    if ko in src:
+        print("[skip] project.godot (ko 번역 이미 등록됨)")
+        return
+    m = re.search(r"(translations=PoolStringArray\()(.*?)(\s*\))", src, re.S)
+    if not m:
+        sys.exit("[error] project.godot에서 locale/translations 목록을 찾지 못함")
+    body = m.group(2).rstrip()
+    new = body + ', "' + ko + '"' if body.strip() else '"' + ko + '"'
+    _write("project.godot", src[: m.start(2)] + new + src[m.end(2):])
+    print("[ok]   project.godot += ko 번역")
+
+
+def patch_fonts():
+    """옛 폰트 파일명(Xclassicfont/X8bitmapfont)에도 한글 비트맵 폰트를 복사하고 menuFont 높이를 맞춤."""
+    fonts = "src/Fonts"
+    for src_name, dst_name in [("xclassicfontfinal.fnt", "Xclassicfont.fnt"),
+                               ("x8bitmapfontfinal.fnt", "X8bitmapfont.fnt")]:
+        src = os.path.join(fonts, src_name)
+        if not os.path.exists(src):
+            print(f"[warn] {src} 없음")
+            continue
+        shutil.copyfile(src, os.path.join(fonts, dst_name))
+        print(f"[ok]   {dst_name} <- {src_name}")
+    menu = os.path.join(fonts, "menuFont.tres")
+    if os.path.exists(menu):
+        _sub(menu, "height = 8.0\n", "height = 14.0\n", "menuFont 높이 8 -> 14")
+
+
+PACKAGE = os.environ.get("ANDROID_PACKAGE", "com.mmx8.teamtag.AND")
 VERSION_NAME = os.environ.get("VERSION_NAME", "0.9.1")
 VERSION_CODE = os.environ.get("VERSION_CODE", "1")
 
@@ -78,7 +148,7 @@ permissions/write_external_storage=false
 
 def patch_project_godot_android():
     path = "project.godot"
-    src = p.read(path)
+    src = _read(path)
     nl = "\r\n" if "\r\n" in src else "\n"
     m = re.search(r"^\[rendering\]\s*$", src, re.M)
     if not m:
@@ -89,13 +159,13 @@ def patch_project_godot_android():
         print("[skip] project.godot (ETC 이미 설정됨)")
         return
     src = src[:m.end()] + nl + nl.join(add) + src[m.end():]
-    p.write(path, src)
+    _write(path, src)
     print(f"[ok]   project.godot += {add}")
 
 
 def write_preset():
     text = PRESET.format(code=VERSION_CODE, vname=VERSION_NAME, pkg=PACKAGE)
-    p.write("export_presets.cfg", text)
+    _write("export_presets.cfg", text)
     print("[ok]   export_presets.cfg 를 Android CI 프리셋으로 교체")
 
 
@@ -103,6 +173,6 @@ if __name__ == "__main__":
     if not os.path.exists("project.godot"):
         sys.exit("[error] 저장소 루트(project.godot가 있는 곳)에서 실행하세요")
     patch_project_godot_android()
-    p.apply_korean()
-    p.patch_tagteam_fonts()
+    apply_korean()
+    patch_fonts()
     write_preset()
