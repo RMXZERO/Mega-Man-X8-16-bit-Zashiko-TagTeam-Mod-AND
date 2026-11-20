@@ -969,7 +969,7 @@ def patch_tagteam_layout():
              "margin_left = -14.0\nmargin_top = -21.0\nmargin_right = 130.0\nmargin_bottom = -7.0", "NEW GAME+ 줄 아래로")
 
 
-PACKAGE = os.environ.get("ANDROID_PACKAGE", "com.mmx8.zashiko")
+PACKAGE = os.environ.get("ANDROID_PACKAGE", "com.mmx8.teamtag_AND")
 VERSION_NAME = os.environ.get("VERSION_NAME", "0.9.1")
 VERSION_CODE = os.environ.get("VERSION_CODE", "1")
 
