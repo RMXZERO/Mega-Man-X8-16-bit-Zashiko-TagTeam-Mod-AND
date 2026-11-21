@@ -132,12 +132,16 @@ jobs:
           # .import 캐시가 없으므로 첫 실행은 임포트만 하고 실패해도 무시
           # (3.5에서는 --editor --quit 가 임포트 전에 종료되므로 --export 로 임포트)
           "$GODOT" --path . --no-window --export "Android CI" "$PWD/build/android/${APP_NAME}.apk" || true
+          # 첫 실행에서 만들어진 APK 가 두 번째 내보내기에 통째로 들어가 용량이 두 배가 되는 것을 막는다
+          rm -f build/android/*.apk
 
       - name: APK 내보내기
         run: |
           set -eux
           "$GODOT" --path . --no-window --export "Android CI" "$PWD/build/android/${APP_NAME}.apk"
           ls -lh "build/android/${APP_NAME}.apk"
+          # APK 안에서 가장 큰 파일 15개 (용량 점검용)
+          unzip -l "build/android/${APP_NAME}.apk" | sort -k1 -n -r | head -15
 
       - uses: actions/upload-artifact@v4
         with:
