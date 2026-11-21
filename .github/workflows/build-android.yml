@@ -50,6 +50,11 @@ jobs:
       - name: Godot + 안드로이드 내보내기 템플릿 설치
         run: |
           set -euxo pipefail
+          # 내려받는 파일(Godot 본체, 템플릿 ~575MB)이 프로젝트 폴더에 섞이면 APK 안에 그대로 들어가 용량이 두 배가 되므로
+          # 프로젝트 밖(RUNNER_TEMP)에서 작업한다
+          WORK="$RUNNER_TEMP/godot-tools"
+          mkdir -p "$WORK"
+          cd "$WORK"
           BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
           curl -fL -o godot.zip      "$BASE/Godot_v${GODOT_VERSION}-stable_osx.universal.zip"
           curl -fL -o templates.tpz  "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
@@ -60,7 +65,7 @@ jobs:
           unzip -q templates.tpz 'templates/android_*' 'templates/version.txt' -d tpl
           mv tpl/templates/* "$TPL/"
           ls -l "$TPL"
-          echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+          echo "GODOT=$WORK/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
 
       - name: 안드로이드 SDK 준비
         run: |
