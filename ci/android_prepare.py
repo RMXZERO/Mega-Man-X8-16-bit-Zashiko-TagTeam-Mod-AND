@@ -110,7 +110,7 @@ def patch_presets_android():
         ("runnable", "false"),
         ("export_path", q("")),
         # 원래 제외 목록(*.csv, *.txt, *.pdn)에 빌드용 파일/서명 키가 APK 안에 들어가지 않도록 추가
-        ("exclude_filter", q("*.csv, *.txt, *.pdn, *.ase, *.aseprite, *.py, *.md, *.zip, *.dll, *.exe, *.ico, *.world, *.keystore, *.jks, *.apk, *.aab, res://build/*")),
+        ("exclude_filter", q("*.csv, *.txt, *.pdn, *.ase, *.aseprite, *.py, *.md, *.zip, *.dll, *.exe, *.ico, *.world, *.keystore, *.jks, *.apk, *.aab, *.tpz, res://build/*, res://Godot.app/*, res://tpl/*")),
         ("custom_template/debug", q("")),
         ("custom_template/release", q("")),
         ("custom_build/use_custom_build", "false"),
