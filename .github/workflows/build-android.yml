@@ -32,6 +32,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # sdkmanager(안드로이드 SDK 도구)는 JDK 17 이 필요하고, Godot 내보내기는 JDK 11 로 돌린다.
+      # 17 을 먼저 깔아 경로를 저장해 두고, 그 뒤에 11 을 깔아서 이후 단계의 기본 JDK 는 11 이 되게 한다.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: sdkmanager 용 JDK 17 경로 저장
+        run: echo "JDK17=$JAVA_HOME" >> "$GITHUB_ENV"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -57,8 +67,16 @@ jobs:
           set -eux
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -d "$SDK"
-          SDKMANAGER="$(find "$SDK" -name sdkmanager -type f | head -1)"
+          # 옛 sdkmanager(tools/bin)는 Java 8 용이라 최신 JDK 에서 javax.xml.bind 오류로 죽는다
+          # -> cmdline-tools 의 sdkmanager 를 JDK 17 로 실행
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)"
+          fi
           test -n "$SDKMANAGER"
+          export JAVA_HOME="$JDK17"
+          export PATH="$JDK17/bin:$PATH"
+          java -version
           yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null || true
           "$SDKMANAGER" --sdk_root="$SDK" "platform-tools" "build-tools;30.0.3" "platforms;android-29"
           ls "$SDK/build-tools"
