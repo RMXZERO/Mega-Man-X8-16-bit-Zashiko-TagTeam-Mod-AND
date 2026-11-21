@@ -137,6 +137,16 @@ def patch_presets_android():
     print(f"[ok]   export_presets.cfg += preset.{n} ({PRESET_NAME}, {PACKAGE}, v{VERSION_NAME}/{VERSION_CODE})")
 
 
+def _run(name):
+    """ios_prepare.py 의 공통 패치를 이름으로 실행. 그 파일에 없는 함수면 경고만 하고 건너뛴다
+    (iOS 저장소의 최신 ci/ios_prepare.py 를 이 저장소의 ci/ 로 복사해 오면 전부 적용됨)."""
+    fn = getattr(ip, name, None)
+    if fn is None:
+        print(f"[warn] ios_prepare.py 에 {name}() 가 없어 건너뜀 - iOS 저장소의 최신 ci/ios_prepare.py 로 교체하면 적용됨")
+        return
+    fn()
+
+
 if __name__ == "__main__":
     if not os.path.exists("project.godot"):
         sys.exit("[error] 저장소 루트(project.godot가 있는 곳)에서 실행하세요")
@@ -145,14 +155,14 @@ if __name__ == "__main__":
     patch_project_android()
     patch_presets_android()
     # 2) 공통 패치 (iOS 빌드와 같은 순서)
-    ip.patch_spawner()
-    ip.patch_loading_slot_menu()
-    ip.patch_title_version_text()
-    ip.patch_save_version()
-    ip.patch_clear_color()
-    ip.apply_korean()
-    ip.patch_ko_extra()
-    ip.patch_languages()
-    ip.patch_tagteam_fonts()
-    ip.patch_tagteam_layout()
+    _run("patch_spawner")
+    _run("patch_loading_slot_menu")
+    _run("patch_title_version_text")
+    _run("patch_save_version")
+    _run("patch_clear_color")
+    _run("apply_korean")
+    _run("patch_ko_extra")
+    _run("patch_languages")
+    _run("patch_tagteam_fonts")
+    _run("patch_tagteam_layout")
     print("[done] 안드로이드 전처리 완료")
