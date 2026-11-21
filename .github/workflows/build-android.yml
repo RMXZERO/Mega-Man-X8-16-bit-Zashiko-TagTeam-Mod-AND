@@ -1,6 +1,7 @@
 name: Build Android (APK)
 
-# 수동 실행: Actions 탭 → "Build Android (APK)" → Run workflow
+# 수동 실행 전용: Actions 탭 → "Build Android (APK)" → Run workflow
+# iOS 빌드와 같은 macOS 서버에서 돌린다 (대소문자 구분 없는 파일 시스템이라, 원본 작성자의 Windows 환경과 같게 동작)
 on:
   workflow_dispatch:
     inputs:
@@ -8,91 +9,117 @@ on:
         description: "Godot 버전 (프로젝트는 3.5 계열)"
         default: "3.5.3"
       package_name:
-        description: "패키지 이름"
-        default: "com.mmx8.teamtag.AND"
+        description: "패키지 이름 (앱 고유 ID, 바꾸면 별도 앱으로 설치됨)"
+        default: "com.mmx8.allinone.and"
+      restore_android_ui:
+        description: "안드로이드 전용 메뉴 되살리기 (터치 키 설정, 안드로이드 컨트롤 옵션)"
+        type: boolean
+        default: true
 
 env:
   GODOT_VERSION: ${{ github.event.inputs.godot_version }}
   ANDROID_PACKAGE: ${{ github.event.inputs.package_name }}
+  RESTORE_ANDROID_UI: ${{ github.event.inputs.restore_android_ui }}
   APP_NAME: MMX8
+  APP_DISPLAY_NAME: "MMX8 AIO MOD"
+  VERSION_CODE: ${{ github.run_number }}
+  VERSION_NAME: "1.0.0"
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    runs-on: macos-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
-      # Godot 3.5 의 APK 서명(jarsigner/keytool)은 JDK 11 기준
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "11"
 
-      - name: Android SDK 구성요소 설치
-        run: |
-          set -eux
-          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          echo "SDK=$SDK"
-          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "build-tools;30.0.3" "platforms;android-29"
-          echo "ANDROID_SDK=$SDK" >> "$GITHUB_ENV"
-
-      - name: Godot + Android 내보내기 템플릿 설치
+      - name: Godot + 안드로이드 내보내기 템플릿 설치
         run: |
           set -euxo pipefail
           BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
-          curl -fL -o godot.zip     "$BASE/Godot_v${GODOT_VERSION}-stable_linux_headless.64.zip" || \
-            curl -fL -o godot.zip   "$BASE/Godot_v${GODOT_VERSION}-stable_x11.64.zip"
-          curl -fL -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-          mkdir -p "$HOME/godot" godot_unzip
-          unzip -q godot.zip -d godot_unzip
-          GODOT_BIN="$HOME/godot/godot"
-          mv "$(find godot_unzip -maxdepth 1 -type f -name 'Godot_v*' | head -1)" "$GODOT_BIN"
-          chmod +x "$GODOT_BIN"
-          rm -rf godot_unzip godot.zip
-          TPL="$HOME/.local/share/godot/templates/${GODOT_VERSION}.stable"
+          curl -fL -o godot.zip      "$BASE/Godot_v${GODOT_VERSION}-stable_osx.universal.zip"
+          curl -fL -o templates.tpz  "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q godot.zip
+          TPL="$HOME/Library/Application Support/Godot/templates/${GODOT_VERSION}.stable"
           mkdir -p "$TPL"
-          unzip -q templates.tpz -d tpl
+          # 안드로이드에 필요한 템플릿만 꺼낸다 (전체는 용량이 큼)
+          unzip -q templates.tpz 'templates/android_*' 'templates/version.txt' -d tpl
           mv tpl/templates/* "$TPL/"
-          ls "$TPL" | grep -i android
-          echo "GODOT=$GODOT_BIN" >> "$GITHUB_ENV"
+          ls -l "$TPL"
+          echo "GODOT=$PWD/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
 
-      - name: 디버그 키스토어 + 에디터 설정
+      - name: 안드로이드 SDK 준비
         run: |
           set -eux
-          keytool -genkey -v -keystore "$HOME/debug.keystore" -storepass android -alias androiddebugkey \
-            -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          mkdir -p "$HOME/.config/godot"
-          cat > "$HOME/.config/godot/editor_settings-3.tres" <<EOF2
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -d "$SDK"
+          SDKMANAGER="$(find "$SDK" -name sdkmanager -type f | head -1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK" "platform-tools" "build-tools;30.0.3" "platforms;android-29"
+          ls "$SDK/build-tools"
+          echo "ANDROID_SDK=$SDK" >> "$GITHUB_ENV"
+
+      - name: 서명 키 준비
+        run: |
+          set -eux
+          # ci/mmx8-android.keystore 가 있으면 항상 같은 키로 서명 → 이전 설치 위에 업데이트 가능 (저장 데이터 유지)
+          if [ -f ci/mmx8-android.keystore ]; then
+            cp ci/mmx8-android.keystore "$RUNNER_TEMP/release.keystore"
+          else
+            echo "::warning::ci/mmx8-android.keystore 가 없어서 이번 빌드용 키를 새로 만듭니다. 설치된 앱 위에 업데이트가 안 될 수 있어요."
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.keystore" -alias mmx8 \
+              -keyalg RSA -keysize 2048 -sigalg SHA256withRSA -validity 36500 \
+              -storepass android -keypass android -dname "CN=MMX8 AIO MOD, O=MMX8, C=KR" -storetype PKCS12
+          fi
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "KEYSTORE_USER=mmx8" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASS=android" >> "$GITHUB_ENV"
+
+      - name: Godot 에디터 설정 (안드로이드 SDK / 서명 도구 경로)
+        run: |
+          set -eux
+          SETTINGS="$HOME/Library/Application Support/Godot"
+          mkdir -p "$SETTINGS"
+          cat > "$SETTINGS/editor_settings-3.tres" <<EOF
           [gd_resource type="EditorSettings" format=2]
 
           [resource]
           export/android/android_sdk_path = "$ANDROID_SDK"
-          export/android/debug_keystore = "$HOME/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          export/android/force_system_user = false
-          export/android/shutdown_adb_on_exit = true
-          EOF2
-          sed -i 's/^          //' "$HOME/.config/godot/editor_settings-3.tres"
-          cat "$HOME/.config/godot/editor_settings-3.tres"
+          export/android/adb = "$ANDROID_SDK/platform-tools/adb"
+          export/android/jarsigner = "$JAVA_HOME/bin/jarsigner"
+          export/android/debug_keystore = "$KEYSTORE_PATH"
+          export/android/debug_keystore_user = "$KEYSTORE_USER"
+          export/android/debug_keystore_pass = "$KEYSTORE_PASS"
+          EOF
+          cat "$SETTINGS/editor_settings-3.tres"
 
-      - name: 소스 전처리 (ETC 텍스처 / 한글 / Android 프리셋)
+      - name: 소스 전처리 (한글 / 글자 위치 / 내보내기 프리셋)
         run: python3 ci/android_prepare.py
+
+      - name: build 폴더 임포트 제외
+        run: |
+          set -eux
+          # 내보내기 결과물이 프로젝트 리소스로 임포트되지 않게 제외
+          mkdir -p build/android
+          touch build/.gdignore
 
       - name: 리소스 임포트
         run: |
-          mkdir -p build/android
-          touch build/.gdignore
+          set -x
           # .import 캐시가 없으므로 첫 실행은 임포트만 하고 실패해도 무시
-          "$GODOT" --path . --no-window --export-debug "Android" "$PWD/build/android/${APP_NAME}.apk" || true
+          # (3.5에서는 --editor --quit 가 임포트 전에 종료되므로 --export 로 임포트)
+          "$GODOT" --path . --no-window --export "Android CI" "$PWD/build/android/${APP_NAME}.apk" || true
 
       - name: APK 내보내기
         run: |
           set -eux
-          "$GODOT" --path . --no-window --export-debug "Android" "$PWD/build/android/${APP_NAME}.apk"
-          ls -lh build/android
+          "$GODOT" --path . --no-window --export "Android CI" "$PWD/build/android/${APP_NAME}.apk"
+          ls -lh "build/android/${APP_NAME}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
