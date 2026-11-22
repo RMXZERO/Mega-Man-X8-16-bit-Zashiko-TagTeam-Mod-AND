@@ -137,6 +137,156 @@ def patch_presets_android():
     print(f"[ok]   export_presets.cfg += preset.{n} ({PRESET_NAME}, {PACKAGE}, v{VERSION_NAME}/{VERSION_CODE})")
 
 
+# 가상패드 자동 숨김: 물리 버튼/블루투스 패드로 조작 중이면 화면의 가상패드(System/Android)를 숨긴다.
+#  - 패드가 연결돼 있으면 계속 숨김 (지문 센서 같은 가짜 패드는 제외)
+#  - 연결된 패드가 없어도 키/패드 버튼 입력이 들어오면(안드로이드 게임기의 내장 버튼 등) 숨김
+#  - 그 상태에서 화면을 터치하면 다시 보여줌 (패드 연결 중에는 계속 숨김)
+TOUCH_AUTO_PATH = "System/Android/TouchAuto.gd"
+TOUCH_AUTO_GD = """extends Node
+# 물리 버튼/블루투스 패드로 조작 중이면 화면의 가상패드를 숨기고, 화면을 터치하면 다시 보여준다
+
+const EXCLUDED_PADS = ["uinput-fpc", "uinput-fortsense", "uinput-hidraw"]
+const IGNORED_KEYS = [KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_VOLUMEMUTE]
+
+var pad_connected: bool = false
+var physical_input: bool = false
+var hidden_now: bool = false
+var roots: Array = []
+
+
+func _ready() -> void:
+	pause_mode = Node.PAUSE_MODE_PROCESS
+	pad_connected = _any_real_pad()
+	hidden_now = pad_connected
+	var _e1 = Input.connect("joy_connection_changed", self, "_on_joy_connection_changed")
+	var _e2 = get_tree().connect("node_added", self, "_on_node_added")
+
+
+func _is_excluded(device: int) -> bool:
+	var pad_name: String = Input.get_joy_name(device)
+	for x in EXCLUDED_PADS:
+		if pad_name.begins_with(x):
+			return true
+	return false
+
+
+func _any_real_pad() -> bool:
+	for id in Input.get_connected_joypads():
+		if not _is_excluded(id):
+			return true
+	return false
+
+
+func _on_joy_connection_changed(_device: int, _connected: bool) -> void:
+	pad_connected = _any_real_pad()
+	_apply()
+
+
+func _on_node_added(n: Node) -> void:
+	if n is TouchScreenButton and not (n.get_parent() is TouchScreenButton):
+		roots.append(n)
+		call_deferred("_apply_node", n)
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		if event.pressed and physical_input:
+			physical_input = false
+			_apply()
+	elif event is InputEventJoypadButton:
+		if event.pressed and not physical_input and not _is_excluded(event.device):
+			physical_input = true
+			_apply()
+	elif event is InputEventJoypadMotion:
+		if abs(event.axis_value) > 0.6 and not physical_input and not _is_excluded(event.device):
+			physical_input = true
+			_apply()
+	elif event is InputEventKey:
+		if event.pressed and not event.echo and not (event.scancode in IGNORED_KEYS) and not physical_input:
+			physical_input = true
+			_apply()
+
+
+func _apply() -> void:
+	hidden_now = pad_connected or physical_input
+	var keep: Array = []
+	for n in roots:
+		if is_instance_valid(n):
+			keep.append(n)
+			_apply_node(n)
+	roots = keep
+
+
+func _apply_node(n) -> void:
+	if not is_instance_valid(n):
+		return
+	if hidden_now:
+		if not n.has_meta("ta_hidden"):
+			n.set_meta("ta_vis", n.visible)
+			n.set_meta("ta_hidden", true)
+		n.visible = false
+	elif n.has_meta("ta_hidden"):
+		n.visible = n.get_meta("ta_vis")
+		n.remove_meta("ta_hidden")
+"""
+
+# 조이스틱류(Area2D)는 숨겨도 _input 이 계속 돌기 때문에, 보이지 않을 때는 입력을 무시하고 눌린 방향을 풀어 준다
+TOUCH_GUARD_FILES = ["System/Android/joystick.gd", "System/Android/weaponround.gd"]
+TOUCH_GUARD_MARK = "# Android-PORT: 가상패드 숨김 중에는 입력 무시"
+
+
+def patch_touch_auto():
+    # 1) 자동 숨김 스크립트 추가
+    if os.path.exists(TOUCH_AUTO_PATH) and "ta_hidden" in ip.read(TOUCH_AUTO_PATH):
+        print(f"[skip] {TOUCH_AUTO_PATH} (이미 있음)")
+    else:
+        ip.write(TOUCH_AUTO_PATH, TOUCH_AUTO_GD)
+        print(f"[ok]   {TOUCH_AUTO_PATH} 추가 (가상패드 자동 숨김)")
+
+    # 2) project.godot autoload 등록
+    path = "project.godot"
+    src = ip.read(path)
+    if "TouchAuto=" in src:
+        print("[skip] project.godot (TouchAuto 이미 등록됨)")
+    else:
+        nl = "\r\n" if "\r\n" in src else "\n"
+        m = re.search(r"^\[autoload\]\r?\n", src, re.M)
+        if not m:
+            print("[warn] project.godot 에 [autoload] 섹션이 없음")
+        else:
+            end = re.search(r"^\r?\n", src[m.end():], re.M)
+            at = m.end() + (end.start() if end else len(src) - m.end())
+            src = src[:at] + 'TouchAuto="*res://System/Android/TouchAuto.gd"' + nl + src[at:]
+            ip.write(path, src)
+            print("[ok]   project.godot += TouchAuto autoload")
+
+    # 3) 조이스틱/무기 링: 숨김 중에는 입력 무시
+    for f in TOUCH_GUARD_FILES:
+        if not os.path.exists(f):
+            print(f"[warn] {f} 없음 - 건너뜀")
+            continue
+        src = ip.read(f)
+        if TOUCH_GUARD_MARK in src:
+            print(f"[skip] {f} (이미 패치됨)")
+            continue
+        nl = "\r\n" if "\r\n" in src else "\n"
+        m = re.search(r"^func _input\(event\):\r?\n", src, re.M)
+        if not m:
+            print(f"[warn] {f}: _input 을 찾지 못함 - 건너뜀")
+            continue
+        guard = nl.join([
+            "\t" + TOUCH_GUARD_MARK,
+            "\tif not is_visible_in_tree():",
+            "\t\tif touch_id != null:",
+            "\t\t\ttouch_id = null",
+            "\t\t\treset_joystick()",
+            "\t\treturn",
+            "",
+        ])
+        ip.write(f, src[:m.end()] + guard + src[m.end():])
+        print(f"[ok]   {f}: 숨김 중에는 입력 무시")
+
+
 def _run(name):
     """ios_prepare.py 의 공통 패치를 이름으로 실행. 그 파일에 없는 함수면 경고만 하고 건너뛴다
     (iOS 저장소의 최신 ci/ios_prepare.py 를 이 저장소의 ci/ 로 복사해 오면 전부 적용됨)."""
@@ -153,6 +303,7 @@ if __name__ == "__main__":
     # 1) 안드로이드 전용 화면 되살리기 + 내보내기 설정
     apply_android_assets()
     patch_project_android()
+    patch_touch_auto()
     patch_presets_android()
     # 2) 공통 패치 (iOS 빌드와 같은 순서)
     _run("patch_spawner")
