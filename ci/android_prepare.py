@@ -287,6 +287,151 @@ def patch_touch_auto():
         print(f"[ok]   {f}: 숨김 중에는 입력 무시")
 
 
+# 타이틀에서 20초 대기하면 디버그 켜기/끄기 (iOS 판과 같은 동작)
+DEBUG_IDLE_PATH = "System/DebugIdle.gd"
+DEBUG_IDLE_GD = """extends Node
+# 타이틀 메뉴에서 20초 동안 아무 입력(터치 등) 없이 두면 디버그를 켠다. 다른 메뉴에 들어갔다 나와서
+# 다시 20초 두면 이번엔 끈다. 화면 상단 가운데에 3초 알림. (iOS 판의 디버그 토글과 같은 동작)
+
+const DEBUG_IDLE_SEC = 20.0
+
+var dbg_idle: float = 0.0          # 타이틀 메뉴에서 입력 없이 지난 시간
+var dbg_armed: bool = true         # 한 번 토글하면, 다른 메뉴에 들어갔다 나올 때까지 다시 토글하지 않음
+var dbg_visited: bool = false      # 토글한 뒤 하위 메뉴에 들어갔다 왔는지
+var toast_layer = null
+var toast_label = null
+var toast_left: float = 0.0
+
+
+func _ready() -> void:
+	pause_mode = Node.PAUSE_MODE_PROCESS
+	var _e = get_tree().connect("node_added", self, "_on_node_added")
+
+
+# 타이틀 옵션 버튼은 원래 select_special 을 누르지 않고 들어가면 디버그를 꺼 버리므로 해금 플래그를 꺼 둔다
+func _on_node_added(n: Node) -> void:
+	if n is BaseButton:
+		call_deferred("_fix_button", n)
+
+
+func _fix_button(n) -> void:
+	if is_instance_valid(n) and n.get("able_to_unlock_debug") == true:
+		n.able_to_unlock_debug = false
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		return
+	if event is InputEventJoypadMotion and abs(event.axis_value) < 0.5:
+		return
+	dbg_idle = 0.0
+
+
+func _process(delta: float) -> void:
+	if toast_left > 0.0:
+		toast_left -= delta
+		if toast_left <= 0.0 and toast_label != null:
+			toast_label.visible = false
+	var sc = get_tree().current_scene
+	var mm = null
+	if sc != null and sc.filename == "res://src/Title/IntroCapcom.tscn":
+		mm = sc.get_node_or_null("MainMenu")
+	if mm == null:
+		dbg_idle = 0.0
+		return
+	if _submenu_open(mm):
+		dbg_idle = 0.0
+		dbg_visited = true  # 옵션/키 설정 같은 하위 메뉴에 들어감
+		return
+	if mm.get("locked") != false:
+		dbg_idle = 0.0  # 타이틀 연출 중
+		return
+	if not dbg_armed:
+		if dbg_visited:
+			dbg_armed = true
+			dbg_visited = false
+		else:
+			return
+	dbg_idle += delta
+	if dbg_idle < DEBUG_IDLE_SEC:
+		return
+	dbg_armed = false
+	dbg_visited = false
+	dbg_idle = 0.0
+	var on = not GameManager.debug_enabled
+	GameManager.debug_enabled = on
+	if not on:
+		Configurations.set("ShowDebug", false)
+	_show_toast("디버그 켜짐" if on else "디버그 꺼짐")
+
+
+# mm 아래에 열려 있는(active) 하위 X8Menu(옵션, 키 설정, 불러오기 등)가 있는지
+func _submenu_open(mm: Node) -> bool:
+	for c in mm.get_children():
+		if _has_active_menu(c):
+			return true
+	return false
+
+
+func _has_active_menu(n: Node) -> bool:
+	if n is CanvasLayer and n.get("exit_action") != null and n.get("active") == true:
+		return true
+	for c in n.get_children():
+		if _has_active_menu(c):
+			return true
+	return false
+
+
+func _show_toast(text: String) -> void:
+	if toast_layer == null:
+		toast_layer = CanvasLayer.new()
+		toast_layer.layer = 120
+		toast_layer.pause_mode = Node.PAUSE_MODE_PROCESS
+		add_child(toast_layer)
+		toast_label = Label.new()
+		toast_label.align = Label.ALIGN_CENTER
+		toast_label.valign = Label.VALIGN_CENTER
+		toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var f = load("res://src/Fonts/menuFont.tres")
+		if f != null:
+			toast_label.add_font_override("font", f)
+		toast_label.add_color_override("font_color", Color(1, 1, 1, 1))
+		var sb = StyleBoxFlat.new()
+		sb.bg_color = Color(0, 0, 0, 0.75)
+		toast_label.add_stylebox_override("normal", sb)
+		toast_layer.add_child(toast_label)
+	toast_label.text = text
+	var vs = get_viewport().get_visible_rect().size
+	toast_label.rect_size = Vector2(120.0, 20.0)
+	toast_label.rect_position = Vector2((vs.x - 120.0) * 0.5, 10.0)
+	toast_label.visible = true
+	toast_left = 3.0
+"""
+
+
+def patch_debug_idle():
+    if os.path.exists(DEBUG_IDLE_PATH) and "DEBUG_IDLE_SEC" in ip.read(DEBUG_IDLE_PATH):
+        print(f"[skip] {DEBUG_IDLE_PATH} (이미 있음)")
+    else:
+        ip.write(DEBUG_IDLE_PATH, DEBUG_IDLE_GD)
+        print(f"[ok]   {DEBUG_IDLE_PATH} 추가 (타이틀 20초 대기 디버그 토글)")
+    path = "project.godot"
+    src = ip.read(path)
+    if "DebugIdle=" in src:
+        print("[skip] project.godot (DebugIdle 이미 등록됨)")
+        return
+    nl = "\r\n" if "\r\n" in src else "\n"
+    m = re.search(r"^\[autoload\]\r?\n", src, re.M)
+    if not m:
+        print("[warn] project.godot 에 [autoload] 섹션이 없음")
+        return
+    end = re.search(r"^\r?\n", src[m.end():], re.M)
+    at = m.end() + (end.start() if end else len(src) - m.end())
+    src = src[:at] + 'DebugIdle="*res://System/DebugIdle.gd"' + nl + src[at:]
+    ip.write(path, src)
+    print("[ok]   project.godot += DebugIdle autoload")
+
+
 def _run(name):
     """ios_prepare.py 의 공통 패치를 이름으로 실행. 그 파일에 없는 함수면 경고만 하고 건너뛴다
     (iOS 저장소의 최신 ci/ios_prepare.py 를 이 저장소의 ci/ 로 복사해 오면 전부 적용됨)."""
@@ -304,6 +449,7 @@ if __name__ == "__main__":
     apply_android_assets()
     patch_project_android()
     patch_touch_auto()
+    patch_debug_idle()
     patch_presets_android()
     # 2) 공통 패치 (iOS 빌드와 같은 순서)
     _run("patch_spawner")
