@@ -33,7 +33,7 @@ func _Setup() -> void :
 		audioplayer.play()
 	if should_emit_kill_signal:
 		Event.emit_signal("enemy_kill", character)
-	explosions.emitting = true
+	FxMode.emit(explosions, true)
 	sprite.playing = false
 	sprite.material.set_shader_param("Alpha_Blink", 1)
 	extra_actions_at_death_start()
@@ -49,12 +49,12 @@ func _Update(_delta: float) -> void :
 		audio.pitch_scale = rand_range(0.95, 1.05)
 		audio.play()
 	if timer > explosion_duration:
-		if explosions.emitting:
+		if FxMode.is_emitting(explosions):
 			spawn_item()
 			emit_remains_particles()
 			character.emit_signal("death")
 			extra_actions_after_death()
-			explosions.emitting = false
+			FxMode.emit(explosions, false)
 		sprite.visible = false
 
 func extra_actions_after_death() -> void :

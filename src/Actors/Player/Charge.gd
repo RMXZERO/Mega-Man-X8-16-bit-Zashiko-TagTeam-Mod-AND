@@ -41,7 +41,7 @@ func _ready() -> void :
 	audio2 = get_node("audioStreamPlayer2")
 	Tools.timer_p(0.1, "set_deferred", self, ["debug_logs", false])
 	reset_input()
-	if CharacterManager.is_Android():
+	if FxMode.use_cpu():
 		_use_cpu_particles()
 	
 func reset_input() -> void :

@@ -69,8 +69,8 @@ func _physics_process(_delta: float) -> void :
 	if executing:
 		if is_freeze_time_over() and freeze_over == false:
 			GameManager.unpause(character.name + name)
-			smoke.emitting = true
-			explosions.emitting = true
+			FxMode.emit(smoke, true)
+			FxMode.emit(explosions, true)
 			$audioStreamPlayer2D.play()
 			freeze_over = true
 			tempo = 1
@@ -113,7 +113,7 @@ func _Update(_delta: float):
 		sprite.material.set_shader_param("Alpha", sprite_alpha)
 		
 	if sprite.material.get_shader_param("Alpha") <= 0.35:
-		smoke.emitting = false
+		FxMode.emit(smoke, false)
 	
 	
 	if is_explosion_time_over():
@@ -123,7 +123,7 @@ func _Update(_delta: float):
 func end_explosion(_delta):
 	background.scale.x = 400
 	background.scale.y = 160
-	explosions.emitting = false
+	FxMode.emit(explosions, false)
 	sprite.visible = false
 	reploid.visible = false
 	background_alpha -= _delta / 1.7
