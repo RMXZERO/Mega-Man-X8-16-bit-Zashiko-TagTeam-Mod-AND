@@ -397,14 +397,21 @@ func reposition_collectible_in_savedata(collectible: String) -> void :
 	collectibles.erase(collectible)
 	collectibles.append(collectible)
 
+# 안드로이드 '화면 비율 무시' 옵션(Aspect == 0)이면 IGNORE, 아니면 KEEP.
+# 메뉴를 열고 닫을 때마다 KEEP 으로 덮어써서 타이틀로 돌아오면 16:9 로 되돌아가던 문제를 막는다.
+func get_stretch_aspect() -> int:
+	if CharacterManager.is_Android() and Configurations.get("Aspect") == 0:
+		return SceneTree.STRETCH_ASPECT_IGNORE
+	return SceneTree.STRETCH_ASPECT_KEEP
+
 func set_stretch_mode(mode) -> void :
-	get_tree().set_screen_stretch(mode, SceneTree.STRETCH_ASPECT_KEEP, GameManager.Resolution)
+	get_tree().set_screen_stretch(mode, get_stretch_aspect(), GameManager.Resolution)
 
 func reset_stretch_mode() -> void :
 	if Configurations.get("StretchMode"):
-		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_VIEWPORT, SceneTree.STRETCH_ASPECT_KEEP, Resolution)
+		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_VIEWPORT, get_stretch_aspect(), Resolution)
 	else:
-		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, SceneTree.STRETCH_ASPECT_KEEP, Resolution)
+		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, get_stretch_aspect(), Resolution)
 
 func handle_end_of_level(delta: float) -> void :
 	if end_stage_timer > 0:

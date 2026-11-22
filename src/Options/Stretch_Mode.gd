@@ -24,7 +24,7 @@ func _get_stretch_mode() -> bool:
 func display_stretch_mode() -> void :
 	if Configurations.get("StretchMode"):
 		display_value("STRETCH_OPTION_VIEWPORT")
-		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_VIEWPORT, SceneTree.STRETCH_ASPECT_KEEP, GameManager.Resolution)
+		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_VIEWPORT, GameManager.get_stretch_aspect(), GameManager.Resolution)
 	else:
 		display_value("STRETCH_OPTION_2D")
-		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, SceneTree.STRETCH_ASPECT_KEEP, GameManager.Resolution)
+		get_tree().set_screen_stretch(SceneTree.STRETCH_MODE_2D, GameManager.get_stretch_aspect(), GameManager.Resolution)

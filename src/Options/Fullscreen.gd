@@ -34,6 +34,9 @@ func fullscreen_changed(key) -> void :
 
 func setup() -> void :
 	if CharacterManager.is_Android():
+		var saved = get_aspect_ratio()
+		if saved != null and aspect_options.has(saved):
+			current_aspect_index = aspect_options.find(saved)
 		set_aspect_ratio(get_aspect_ratio())
 	else:
 		set_fullscreen(get_fullscreen())

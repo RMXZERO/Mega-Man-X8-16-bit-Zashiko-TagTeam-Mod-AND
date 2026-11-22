@@ -41,6 +41,8 @@ func _ready() -> void :
 	audio2 = get_node("audioStreamPlayer2")
 	Tools.timer_p(0.1, "set_deferred", self, ["debug_logs", false])
 	reset_input()
+	if CharacterManager.is_Android():
+		_use_cpu_particles()
 	
 func reset_input() -> void :
 	if CharacterManager.auto_charge and not CharacterManager.ultimate_buster:
@@ -253,3 +255,31 @@ func should_execute_on_hold() -> bool:
 
 func should_always_listen_to_inputs() -> bool:
 	return true
+
+
+# 안드로이드: 차지 이펙트(몸으로 모이는 빛)가 GPU 파티클(Particles2D)이라 일부 기기에서 안 보임.
+# 같은 설정의 CPUParticles2D 로 바꿔서 그린다. 변환이 실패하면 원래 파티클을 그대로 쓴다.
+func _use_cpu_particles() -> void :
+	var converted = []
+	for p in particles:
+		if p == null or not (p is Particles2D):
+			return
+		var cpu = CPUParticles2D.new()
+		cpu.convert_from_particles(p)
+		cpu.name = String(p.name) + "CPU"
+		cpu.position = p.position
+		cpu.z_index = p.z_index
+		cpu.pause_mode = p.pause_mode
+		cpu.material = p.material
+		cpu.visible = false
+		cpu.emitting = true
+		converted.append(cpu)
+	for i in range(particles.size()):
+		var gpu = particles[i]
+		gpu.get_parent().add_child(converted[i])
+		gpu.visible = false
+		gpu.emitting = false
+	charging_particle = converted[0]
+	charged_particle = converted[1]
+	super_particle = converted[2]
+	particles = converted
