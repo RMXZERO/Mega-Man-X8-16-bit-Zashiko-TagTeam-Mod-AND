@@ -329,21 +329,27 @@ func hit(_body : Node) -> void:
 # ---- 자동 입력 보조 (제로 AUTO ATTACK / X AUTO CHARGE) ----
 # 아래 두 함수는 CharacterManager._physics_process 에서 호출된다.
 # (autoload 가 플레이어보다 먼저 처리되므로, 넣어 준 입력을 같은 프레임의 능력들이 확실히 인식한다)
-const AUTO_ATTACK_RANGE_X: float = 75.0
-const AUTO_ATTACK_RANGE_UP: float = 45.0
+const AUTO_ATTACK_RANGE_X: float = 70.0   # 제로 중심 ~ 적 충돌영역 가장자리까지 허용 거리
+const AUTO_ATTACK_RANGE_UP: float = 50.0
 const AUTO_ATTACK_RANGE_DOWN: float = 25.0
 const AUTO_ATTACK_INTERVAL: float = 0.12
+const AUTO_ATTACK_HOLD: float = 0.05      # fire 를 눌러 두는 시간 (물리 프레임 3개쯤)
 var _auto_attack_pressed: bool = false
+var _auto_attack_hold: float = 0.0
 var _auto_attack_cd: float = 0.0
 var auto_charge_block_basic: float = 0.0
+var _fire_was_down: bool = false
 
 func is_zero_player() -> bool:
 	return get_node_or_null("SaberCharge") != null
 
 func check_zero_auto_attack(delta: float) -> void:
 	if _auto_attack_pressed:
-		Input.action_release("fire")
-		_auto_attack_pressed = false
+		_auto_attack_hold -= delta
+		if _auto_attack_hold <= 0.0:
+			Input.action_release("fire")
+			_auto_attack_pressed = false
+		return
 	if not is_zero_player():
 		return
 	if not CharacterManager.zero_auto_attack:
@@ -358,26 +364,77 @@ func check_zero_auto_attack(delta: float) -> void:
 	if has_enemy_in_attack_range():
 		Input.action_press("fire")
 		_auto_attack_pressed = true
+		_auto_attack_hold = AUTO_ATTACK_HOLD
 		_auto_attack_cd = AUTO_ATTACK_INTERVAL
+
+# 적의 충돌 영역(area2D)을 월드 좌표 Rect2 로 구한다. 못 구하면 중심점만 가진 Rect2.
+func _get_enemy_rect(enemy_damage, body: Node2D) -> Rect2:
+	var rect := Rect2(body.global_position, Vector2.ZERO)
+	var found := false
+	var area = null
+	if enemy_damage != null:
+		area = enemy_damage.get("area2D")
+	if area == null:
+		area = body.get_node_or_null("area2D")
+	if area != null and is_instance_valid(area):
+		for child in area.get_children():
+			if not (child is CollisionShape2D) or child.disabled or child.shape == null:
+				continue
+			var shape = child.shape
+			var ext := Vector2.ZERO
+			if shape is RectangleShape2D:
+				ext = shape.extents
+			elif shape is CircleShape2D:
+				ext = Vector2(shape.radius, shape.radius)
+			elif shape is CapsuleShape2D:
+				ext = Vector2(shape.radius, shape.radius + shape.height * 0.5)
+			else:
+				continue
+			var sc: Vector2 = child.global_scale
+			ext = Vector2(ext.x * abs(sc.x), ext.y * abs(sc.y))
+			var r := Rect2(child.global_position - ext, ext * 2.0)
+			if found:
+				rect = rect.merge(r)
+			else:
+				rect = r
+				found = true
+	return rect
 
 func has_enemy_in_attack_range() -> bool:
 	var dir = get_facing_direction()
+	var px: float = global_position.x
+	var py: float = global_position.y
 	for node in get_tree().get_nodes_in_group("Enemies"):
 		if not is_instance_valid(node):
 			continue
 		var body = node
+		var ed = null
 		if node is EnemyDamage:
 			if not node.active:
 				continue
+			ed = node
 			body = node.character
 		if not is_instance_valid(body) or not (body is Node2D):
 			continue
 		if body.has_method("has_health") and not body.has_health():
 			continue
-		var diff = body.global_position - global_position
-		if diff.x * dir < -8.0 or abs(diff.x) > AUTO_ATTACK_RANGE_X:
+		if not GameManager.is_on_screen(body.global_position):
 			continue
-		if diff.y < -AUTO_ATTACK_RANGE_UP or diff.y > AUTO_ATTACK_RANGE_DOWN:
+		var rect: Rect2 = _get_enemy_rect(ed, body)
+		# 뒤에 있는 적은 제외 (살짝 겹친 건 허용)
+		if dir > 0 and rect.end.x < px - 8.0:
+			continue
+		if dir < 0 and rect.position.x > px + 8.0:
+			continue
+		var gap_x: float = 0.0
+		if px < rect.position.x:
+			gap_x = rect.position.x - px
+		elif px > rect.end.x:
+			gap_x = px - rect.end.x
+		if gap_x > AUTO_ATTACK_RANGE_X:
+			continue
+		# 세로: 제로 공격 범위 띠와 적 영역이 겹치는지
+		if rect.end.y < py - AUTO_ATTACK_RANGE_UP or rect.position.y > py + AUTO_ATTACK_RANGE_DOWN:
 			continue
 		return true
 	return false
@@ -385,18 +442,23 @@ func has_enemy_in_attack_range() -> bool:
 func check_x_auto_charge(delta: float) -> void:
 	if auto_charge_block_basic > 0.0:
 		auto_charge_block_basic -= delta
+	# 공격 버튼 "방금 눌림"을 프레임 타이밍에 의존하지 않고 직접 판별한다
+	var fire_down: bool = Input.is_action_pressed("fire")
+	var fire_just: bool = fire_down and not _fire_was_down
+	_fire_was_down = fire_down
 	if not CharacterManager.auto_charge or CharacterManager.ultimate_buster or CharacterManager.weaponget:
 		return
 	if is_zero_player() or not has_node("Charge"):
 		return
 	if not listening_to_inputs or is_executing("Ride"):
 		return
-	if Input.is_action_pressed("fire"):
+	if fire_down:
 		# 공격 버튼을 누르는 동안은 자동 차지를 풀어서 모아 둔 차지샷이 나가게 한다
-		if Input.is_action_just_pressed("fire"):
+		if fire_just:
 			var charge = get_node("Charge")
 			if charge.has_method("get_charge_level") and charge.get_charge_level() >= 1:
-				auto_charge_block_basic = 0.2
+				# 차지가 모인 상태면 기본탄은 막고 차지샷만 내보낸다
+				auto_charge_block_basic = 0.25
 		if Input.is_action_pressed("auto_charge"):
 			Input.action_release("auto_charge")
 	elif not Input.is_action_pressed("auto_charge"):
