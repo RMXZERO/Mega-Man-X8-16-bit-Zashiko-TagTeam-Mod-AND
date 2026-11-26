@@ -122,7 +122,6 @@ func _process(_delta: float) -> void:
 	update_facing_direction()
 
 func _physics_process(delta: float) -> void:
-	check_zero_auto_attack(delta)
 	check_if_should_set_alpha_to_1()
 	check_for_headbump()
 	check_for_land(delta)
@@ -327,20 +326,25 @@ func hit(_body : Node) -> void:
 	emit_signal("melee_hit", _body)
 
 
-# ---- 제로 AUTO ATTACK ----
-# 옵션에서 켜면, 제로가 바라보는 방향 가까이에 적이 있을 때 공격 버튼 입력을 대신 눌러 준다.
+# ---- 자동 입력 보조 (제로 AUTO ATTACK / X AUTO CHARGE) ----
+# 아래 두 함수는 CharacterManager._physics_process 에서 호출된다.
+# (autoload 가 플레이어보다 먼저 처리되므로, 넣어 준 입력을 같은 프레임의 능력들이 확실히 인식한다)
 const AUTO_ATTACK_RANGE_X: float = 75.0
 const AUTO_ATTACK_RANGE_UP: float = 45.0
 const AUTO_ATTACK_RANGE_DOWN: float = 25.0
 const AUTO_ATTACK_INTERVAL: float = 0.12
 var _auto_attack_pressed: bool = false
 var _auto_attack_cd: float = 0.0
+var auto_charge_block_basic: float = 0.0
+
+func is_zero_player() -> bool:
+	return get_node_or_null("SaberCharge") != null
 
 func check_zero_auto_attack(delta: float) -> void:
 	if _auto_attack_pressed:
 		Input.action_release("fire")
 		_auto_attack_pressed = false
-	if not ("saber_combo" in self):
+	if not is_zero_player():
 		return
 	if not CharacterManager.zero_auto_attack:
 		return
@@ -377,3 +381,23 @@ func has_enemy_in_attack_range() -> bool:
 			continue
 		return true
 	return false
+
+func check_x_auto_charge(delta: float) -> void:
+	if auto_charge_block_basic > 0.0:
+		auto_charge_block_basic -= delta
+	if not CharacterManager.auto_charge or CharacterManager.ultimate_buster or CharacterManager.weaponget:
+		return
+	if is_zero_player() or not has_node("Charge"):
+		return
+	if not listening_to_inputs or is_executing("Ride"):
+		return
+	if Input.is_action_pressed("fire"):
+		# 공격 버튼을 누르는 동안은 자동 차지를 풀어서 모아 둔 차지샷이 나가게 한다
+		if Input.is_action_just_pressed("fire"):
+			var charge = get_node("Charge")
+			if charge.has_method("get_charge_level") and charge.get_charge_level() >= 1:
+				auto_charge_block_basic = 0.2
+		if Input.is_action_pressed("auto_charge"):
+			Input.action_release("auto_charge")
+	elif not Input.is_action_pressed("auto_charge"):
+		Input.action_press("auto_charge")

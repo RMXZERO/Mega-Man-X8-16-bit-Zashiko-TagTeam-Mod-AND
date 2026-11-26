@@ -625,6 +625,14 @@ func _ready() -> void :
 	pause_mode = PAUSE_MODE_PROCESS
 	Event.listen("character_switch_end", self, "on_character_switch_end")
 
+func _physics_process(delta: float) -> void :
+	var p = GameManager.player
+	if p == null or not is_instance_valid(p):
+		return
+	if p.has_method("check_zero_auto_attack"):
+		p.check_zero_auto_attack(delta)
+		p.check_x_auto_charge(delta)
+
 func _process(_delta: float) -> void :
 #	if started_fresh_game:
 #		if game_mode >= 3:
