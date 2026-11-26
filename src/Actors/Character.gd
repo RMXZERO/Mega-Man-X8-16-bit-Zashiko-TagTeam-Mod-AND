@@ -122,6 +122,7 @@ func _process(_delta: float) -> void:
 	update_facing_direction()
 
 func _physics_process(delta: float) -> void:
+	check_zero_auto_attack(delta)
 	check_if_should_set_alpha_to_1()
 	check_for_headbump()
 	check_for_land(delta)
@@ -324,3 +325,55 @@ func get_action_just_released(action) -> bool:
 
 func hit(_body : Node) -> void:
 	emit_signal("melee_hit", _body)
+
+
+# ---- 제로 AUTO ATTACK ----
+# 옵션에서 켜면, 제로가 바라보는 방향 가까이에 적이 있을 때 공격 버튼 입력을 대신 눌러 준다.
+const AUTO_ATTACK_RANGE_X: float = 75.0
+const AUTO_ATTACK_RANGE_UP: float = 45.0
+const AUTO_ATTACK_RANGE_DOWN: float = 25.0
+const AUTO_ATTACK_INTERVAL: float = 0.12
+var _auto_attack_pressed: bool = false
+var _auto_attack_cd: float = 0.0
+
+func check_zero_auto_attack(delta: float) -> void:
+	if _auto_attack_pressed:
+		Input.action_release("fire")
+		_auto_attack_pressed = false
+	if not ("saber_combo" in self):
+		return
+	if not CharacterManager.zero_auto_attack:
+		return
+	if not listening_to_inputs or not has_health():
+		return
+	if Input.is_action_pressed("fire"):
+		return
+	_auto_attack_cd -= delta
+	if _auto_attack_cd > 0.0:
+		return
+	if has_enemy_in_attack_range():
+		Input.action_press("fire")
+		_auto_attack_pressed = true
+		_auto_attack_cd = AUTO_ATTACK_INTERVAL
+
+func has_enemy_in_attack_range() -> bool:
+	var dir = get_facing_direction()
+	for node in get_tree().get_nodes_in_group("Enemies"):
+		if not is_instance_valid(node):
+			continue
+		var body = node
+		if node is EnemyDamage:
+			if not node.active:
+				continue
+			body = node.character
+		if not is_instance_valid(body) or not (body is Node2D):
+			continue
+		if body.has_method("has_health") and not body.has_health():
+			continue
+		var diff = body.global_position - global_position
+		if diff.x * dir < -8.0 or abs(diff.x) > AUTO_ATTACK_RANGE_X:
+			continue
+		if diff.y < -AUTO_ATTACK_RANGE_UP or diff.y > AUTO_ATTACK_RANGE_DOWN:
+			continue
+		return true
+	return false

@@ -1,7 +1,7 @@
 extends Node
 
 const codename: String = "X8DMOD"
-var version: String = "Touch Mod After 3 Ver"
+var version: String = "All In One MOD"
 var current_demo: String = ""
 
 var player: Character
