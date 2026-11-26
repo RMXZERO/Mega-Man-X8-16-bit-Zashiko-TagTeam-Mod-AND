@@ -337,6 +337,7 @@ const AUTO_ATTACK_HOLD: float = 0.05      # fire 를 눌러 두는 시간 (물�
 var _auto_attack_pressed: bool = false
 var _auto_attack_hold: float = 0.0
 var _auto_attack_cd: float = 0.0
+var _auto_window_anim: String = ""
 var auto_charge_block_basic: float = 0.0
 var _fire_was_down: bool = false
 
@@ -358,6 +359,21 @@ func check_zero_auto_attack(delta: float) -> void:
 		return
 	if Input.is_action_pressed("fire"):
 		return
+	# 콤보 이어치기: 베는 중 "다음 타 입력 구간"이 열리면 그때 맞춰 한 번 더 누른다.
+	# (일정 간격으로만 누르면 구간을 놓쳐서 1타에서 끊김)
+	var combo = get_node_or_null("SaberCombo")
+	if combo != null and combo.get("executing") and combo.has_method("is_in_buffer_window") and combo.is_in_buffer_window():
+		var anim: String = animatedSprite.animation
+		if anim != _auto_window_anim:
+			if get_auto_attack_direction() != 0:
+				_auto_window_anim = anim
+				Input.action_press("fire")
+				_auto_attack_pressed = true
+				_auto_attack_hold = AUTO_ATTACK_HOLD
+				_auto_attack_cd = AUTO_ATTACK_INTERVAL
+				return
+	else:
+		_auto_window_anim = ""
 	_auto_attack_cd -= delta
 	if _auto_attack_cd > 0.0:
 		return
