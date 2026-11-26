@@ -329,9 +329,9 @@ func hit(_body : Node) -> void:
 # ---- 자동 입력 보조 (제로 AUTO ATTACK / X AUTO CHARGE) ----
 # 아래 두 함수는 CharacterManager._physics_process 에서 호출된다.
 # (autoload 가 플레이어보다 먼저 처리되므로, 넣어 준 입력을 같은 프레임의 능력들이 확실히 인식한다)
-const AUTO_ATTACK_RANGE_X: float = 70.0   # 제로 중심 ~ 적 충돌영역 가장자리까지 허용 거리
-const AUTO_ATTACK_RANGE_UP: float = 60.0
-const AUTO_ATTACK_RANGE_DOWN: float = 35.0
+const AUTO_ATTACK_RANGE_X: float = 60.0   # 제로 중심 ~ 적 충돌영역 가장자리까지 허용 거리
+const AUTO_ATTACK_RANGE_UP: float = 45.0
+const AUTO_ATTACK_RANGE_DOWN: float = 25.0
 const AUTO_ATTACK_INTERVAL: float = 0.12
 const AUTO_ATTACK_HOLD: float = 0.05      # fire 를 눌러 두는 시간 (물리 프레임 3개쯤)
 var _auto_attack_pressed: bool = false
@@ -361,8 +361,13 @@ func check_zero_auto_attack(delta: float) -> void:
 		return
 	# 콤보 이어치기: 베는 중 "다음 타 입력 구간"이 열리면 그때 맞춰 한 번 더 누른다.
 	# (일정 간격으로만 누르면 구간을 놓쳐서 1타에서 끊김)
-	var combo = get_node_or_null("SaberCombo")
-	if combo != null and combo.get("executing") and combo.has_method("is_in_buffer_window") and combo.is_in_buffer_window():
+	var combo = null
+	for combo_name in ["SaberCombo", "SaberJump"]:
+		var c = get_node_or_null(combo_name)
+		if c != null and c.get("executing") and c.has_method("is_in_buffer_window") and c.is_in_buffer_window():
+			combo = c
+			break
+	if combo != null:
 		var anim: String = animatedSprite.animation
 		if anim != _auto_window_anim:
 			if get_auto_attack_direction() != 0:
@@ -378,6 +383,9 @@ func check_zero_auto_attack(delta: float) -> void:
 	if _auto_attack_cd > 0.0:
 		return
 	var target_dir: int = get_auto_attack_direction()
+	if target_dir != 0 and not is_on_floor() and target_dir != get_facing_direction():
+		# 공중(점프 중)에서는 돌아서지 않고, 앞에 있는 적만 공격한다
+		return
 	if target_dir != 0:
 		# 적이 등 뒤에만 있으면 그쪽으로 돌아선 뒤 공격한다 (베는 도중에는 돌지 않음)
 		if target_dir != get_facing_direction() and not _is_in_saber_animation():
