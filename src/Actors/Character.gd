@@ -330,8 +330,8 @@ func hit(_body : Node) -> void:
 # 아래 두 함수는 CharacterManager._physics_process 에서 호출된다.
 # (autoload 가 플레이어보다 먼저 처리되므로, 넣어 준 입력을 같은 프레임의 능력들이 확실히 인식한다)
 const AUTO_ATTACK_RANGE_X: float = 70.0   # 제로 중심 ~ 적 충돌영역 가장자리까지 허용 거리
-const AUTO_ATTACK_RANGE_UP: float = 50.0
-const AUTO_ATTACK_RANGE_DOWN: float = 25.0
+const AUTO_ATTACK_RANGE_UP: float = 60.0
+const AUTO_ATTACK_RANGE_DOWN: float = 35.0
 const AUTO_ATTACK_INTERVAL: float = 0.12
 const AUTO_ATTACK_HOLD: float = 0.05      # fire 를 눌러 두는 시간 (물리 프레임 3개쯤)
 var _auto_attack_pressed: bool = false
@@ -361,7 +361,11 @@ func check_zero_auto_attack(delta: float) -> void:
 	_auto_attack_cd -= delta
 	if _auto_attack_cd > 0.0:
 		return
-	if has_enemy_in_attack_range():
+	var target_dir: int = get_auto_attack_direction()
+	if target_dir != 0:
+		# 적이 등 뒤에만 있으면 그쪽으로 돌아선 뒤 공격한다 (베는 도중에는 돌지 않음)
+		if target_dir != get_facing_direction() and not _is_in_saber_animation():
+			set_direction(target_dir, true)
 		Input.action_press("fire")
 		_auto_attack_pressed = true
 		_auto_attack_hold = AUTO_ATTACK_HOLD
@@ -400,10 +404,22 @@ func _get_enemy_rect(enemy_damage, body: Node2D) -> Rect2:
 				found = true
 	return rect
 
-func has_enemy_in_attack_range() -> bool:
-	var dir = get_facing_direction()
+func _is_in_saber_animation() -> bool:
+	var anims = get("saber_animations")
+	if anims == null or animatedSprite == null:
+		return false
+	return animatedSprite.animation in anims
+
+# 공격 범위 안에 적이 있으면 공격할 방향(1/-1)을, 없으면 0 을 돌려준다.
+# 여러 적이 범위에 있으면 "먼저 범위에 들어온 적"을 계속 우선 공격하고,
+# 그 적이 사라지거나 범위를 벗어나야 다음 적으로 넘어간다.
+var _auto_target = null
+
+func get_auto_attack_direction() -> int:
+	var dir: int = get_facing_direction()
 	var px: float = global_position.x
 	var py: float = global_position.y
+	var in_range := []   # [ [키 노드, 방향], ... ]
 	for node in get_tree().get_nodes_in_group("Enemies"):
 		if not is_instance_valid(node):
 			continue
@@ -421,11 +437,6 @@ func has_enemy_in_attack_range() -> bool:
 		if not GameManager.is_on_screen(body.global_position):
 			continue
 		var rect: Rect2 = _get_enemy_rect(ed, body)
-		# 뒤에 있는 적은 제외 (살짝 겹친 건 허용)
-		if dir > 0 and rect.end.x < px - 8.0:
-			continue
-		if dir < 0 and rect.position.x > px + 8.0:
-			continue
 		var gap_x: float = 0.0
 		if px < rect.position.x:
 			gap_x = rect.position.x - px
@@ -436,8 +447,23 @@ func has_enemy_in_attack_range() -> bool:
 		# 세로: 제로 공격 범위 띠와 적 영역이 겹치는지
 		if rect.end.y < py - AUTO_ATTACK_RANGE_UP or rect.position.y > py + AUTO_ATTACK_RANGE_DOWN:
 			continue
-		return true
-	return false
+		var side: int = dir   # 겹쳐 있으면 지금 보는 방향 그대로
+		if px < rect.position.x:
+			side = 1
+		elif px > rect.end.x:
+			side = -1
+		in_range.append([node, side])
+	if in_range.empty():
+		_auto_target = null
+		return 0
+	# 이미 노리던 적이 아직 범위에 있으면 그 적을 계속 노린다
+	if _auto_target != null and is_instance_valid(_auto_target):
+		for entry in in_range:
+			if entry[0] == _auto_target:
+				return entry[1]
+	# 아니면 가장 먼저 등록된 적(그룹 순서 = 등장 순서)을 새 목표로
+	_auto_target = in_range[0][0]
+	return in_range[0][1]
 
 func check_x_auto_charge(delta: float) -> void:
 	if auto_charge_block_basic > 0.0:
