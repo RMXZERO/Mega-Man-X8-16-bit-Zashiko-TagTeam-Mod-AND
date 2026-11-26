@@ -537,44 +537,115 @@ func check_zero_auto_attack(delta: float) -> void:
 		_auto_attack_hold = AUTO_ATTACK_HOLD
 		_auto_attack_cd = AUTO_ATTACK_INTERVAL
 
-# 적의 충돌 영역(area2D)을 월드 좌표 Rect2 로 구한다. 못 구하면 중심점만 가진 Rect2.
-func _get_enemy_rect(enemy_damage, body: Node2D) -> Rect2:
-	var rect := Rect2(body.global_position, Vector2.ZERO)
+func _is_boss(body) -> bool:
+	if body.is_in_group("Bosses"):
+		return true
+	for child in body.get_children():
+		if child is BossDamage:
+			return true
+	return false
+
+# 공격 가능한 대상인지: 비활성 적은 제외 (보스는 따로 처리)
+func _is_attackable_target(body) -> bool:
+	for child in body.get_children():
+		if child is EnemyDamage and not child.active:
+			return false
+	return true
+
+# CollisionShape2D 하나를 월드 좌표 Rect2 로 바꾼다. 지원 안 하는 모양이면 빈 Rect2(크기 0).
+func _shape_node_rect(shape_node) -> Rect2:
+	var sh = shape_node.shape
+	var xf: Transform2D = shape_node.global_transform
+	if sh is RectangleShape2D:
+		var e: Vector2 = sh.extents
+		var pts = [Vector2(-e.x, -e.y), Vector2(e.x, -e.y), Vector2(e.x, e.y), Vector2(-e.x, e.y)]
+		return _points_rect(pts, xf)
+	if sh is CircleShape2D:
+		var r: float = sh.radius
+		return _points_rect([Vector2(-r, -r), Vector2(r, -r), Vector2(r, r), Vector2(-r, r)], xf)
+	if sh is CapsuleShape2D:
+		var hh: float = sh.height * 0.5 + sh.radius
+		var rr: float = sh.radius
+		return _points_rect([Vector2(-rr, -hh), Vector2(rr, -hh), Vector2(rr, hh), Vector2(-rr, hh)], xf)
+	if sh is ConvexPolygonShape2D:
+		return _points_rect(Array(sh.points), xf)
+	if sh is ConcavePolygonShape2D:
+		return _points_rect(Array(sh.segments), xf)
+	return Rect2()
+
+func _points_rect(pts: Array, xf: Transform2D) -> Rect2:
+	if pts.empty():
+		return Rect2()
+	var first: Vector2 = xf.xform(pts[0])
+	var min_p: Vector2 = first
+	var max_p: Vector2 = first
+	for pt in pts:
+		var w: Vector2 = xf.xform(pt)
+		min_p = Vector2(min(min_p.x, w.x), min(min_p.y, w.y))
+		max_p = Vector2(max(max_p.x, w.x), max(max_p.y, w.y))
+	return Rect2(min_p, max_p - min_p)
+
+func _area_union_rect(area, rect: Rect2, found: bool) -> Array:
+	if area == null or not is_instance_valid(area):
+		return [rect, found]
+	for shape_node in area.get_children():
+		if not (shape_node is CollisionShape2D) or shape_node.disabled or shape_node.shape == null:
+			continue
+		var r: Rect2 = _shape_node_rect(shape_node)
+		if r.size == Vector2.ZERO:
+			continue
+		if found:
+			rect = rect.merge(r)
+		else:
+			rect = r
+			found = true
+	return [rect, found]
+
+# 적/보스의 피격 범위를 월드 좌표 Rect2 로 구한다.
+# 보스는 피격 영역들(area2D, 데미지 노드 안 영역, DamageDetector 등)과 스프라이트 크기를 모두 합친다.
+func _get_enemy_rect(_enemy_damage, body: Node2D) -> Rect2:
+	var rect := Rect2(body.global_position - Vector2(4, 4), Vector2(8, 8))
 	var found := false
-	var area = null
-	if enemy_damage != null:
-		area = enemy_damage.get("area2D")
-	if area == null:
-		area = body.get_node_or_null("area2D")
-	if area != null and is_instance_valid(area):
-		for child in area.get_children():
-			if not (child is CollisionShape2D) or child.disabled or child.shape == null:
-				continue
-			var shape = child.shape
-			var ext := Vector2.ZERO
-			if shape is RectangleShape2D:
-				ext = shape.extents
-			elif shape is CircleShape2D:
-				ext = Vector2(shape.radius, shape.radius)
-			elif shape is CapsuleShape2D:
-				ext = Vector2(shape.radius, shape.radius + shape.height * 0.5)
-			else:
-				continue
-			var sc: Vector2 = child.global_scale
-			ext = Vector2(ext.x * abs(sc.x), ext.y * abs(sc.y))
-			var r := Rect2(child.global_position - ext, ext * 2.0)
+	var areas := [body.get_node_or_null("area2D"), body.get_node_or_null("DamageDetector")]
+	var boss: bool = _is_boss(body)
+	for child in body.get_children():
+		if child is BossDamage:
+			if child.custom_hitbox != null:
+				areas.append(child.custom_hitbox)
+			for sub in child.get_children():
+				if sub is Area2D:
+					areas.append(sub)
+	for a in areas:
+		var res: Array = _area_union_rect(a, rect, found)
+		rect = res[0]
+		found = res[1]
+	if boss:
+		var sr: Rect2 = _sprite_rect(body)
+		if sr.size != Vector2.ZERO:
 			if found:
-				rect = rect.merge(r)
+				rect = rect.merge(sr)
 			else:
-				rect = r
+				rect = sr
 				found = true
 	return rect
 
-func _is_in_saber_animation() -> bool:
-	var anims = get("saber_animations")
-	if anims == null or animatedSprite == null:
-		return false
-	return animatedSprite.animation in anims
+# 보스 본체 스프라이트가 현재 차지하는 영역 (덩치 큰 보스의 충돌영역이 작게 잡힌 경우 보완)
+func _sprite_rect(body) -> Rect2:
+	var spr = body.get_node_or_null("animatedSprite")
+	if spr == null or not (spr is AnimatedSprite) or spr.frames == null:
+		return Rect2()
+	if not spr.frames.has_animation(spr.animation):
+		return Rect2()
+	var tex = spr.frames.get_frame(spr.animation, spr.frame)
+	if tex == null:
+		return Rect2()
+	var sz: Vector2 = tex.get_size()
+	var sc: Vector2 = spr.global_scale
+	var size := Vector2(sz.x * abs(sc.x), sz.y * abs(sc.y))
+	var center: Vector2 = spr.global_position + Vector2(spr.offset.x * sc.x, spr.offset.y * sc.y)
+	if spr.centered:
+		return Rect2(center - size * 0.5, size)
+	return Rect2(center, size)
 
 # 공격 범위 안에 적이 있으면 공격할 방향(1/-1)을, 없으면 0 을 돌려준다.
 # 여러 적이 범위에 있으면 "먼저 범위에 들어온 적"을 계속 우선 공격하고,
@@ -586,23 +657,32 @@ func get_auto_attack_direction() -> int:
 	var px: float = global_position.x
 	var py: float = global_position.y
 	var in_range := []   # [ [키 노드, 방향], ... ]
-	for node in get_tree().get_nodes_in_group("Enemies"):
+	var checked := []
+	var nodes := []
+	nodes.append_array(get_tree().get_nodes_in_group("Enemies"))
+	nodes.append_array(get_tree().get_nodes_in_group("Bosses"))
+	for node in nodes:
 		if not is_instance_valid(node):
 			continue
 		var body = node
-		var ed = null
 		if node is EnemyDamage:
-			if not node.active:
-				continue
-			ed = node
 			body = node.character
 		if not is_instance_valid(body) or not (body is Node2D):
 			continue
+		if checked.has(body):
+			continue
+		checked.append(body)
 		if body.has_method("has_health") and not body.has_health():
 			continue
-		if not GameManager.is_on_screen(body.global_position):
-			continue
-		var rect: Rect2 = _get_enemy_rect(ed, body)
+		# 보스는 상태(활성/피격가능)나 화면 기준점 검사를 하지 않고 범위만 본다
+		# (보스마다 피격 상태를 따로 껐다 켜서 이 검사가 오히려 감지를 막음)
+		var is_boss: bool = _is_boss(body)
+		if not is_boss:
+			if not _is_attackable_target(body):
+				continue
+			if not GameManager.is_on_screen(body.global_position):
+				continue
+		var rect: Rect2 = _get_enemy_rect(null, body)
 		var gap_x: float = 0.0
 		if px < rect.position.x:
 			gap_x = rect.position.x - px
@@ -618,7 +698,7 @@ func get_auto_attack_direction() -> int:
 			side = 1
 		elif px > rect.end.x:
 			side = -1
-		in_range.append([node, side])
+		in_range.append([body, side])
 	if in_range.empty():
 		_auto_target = null
 		return 0
