@@ -23,7 +23,7 @@ env:
   APP_NAME: MMX8
   APP_DISPLAY_NAME: "MMX8 AIO MOD"
   VERSION_CODE: ${{ github.run_number }}
-  VERSION_NAME: "1.0.9"
+  VERSION_NAME: "1.1.0"
 
 jobs:
   build:
