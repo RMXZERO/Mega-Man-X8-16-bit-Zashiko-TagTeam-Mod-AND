@@ -18,7 +18,9 @@ const DEATH_VOICES := {
 	"Zero": "res://src/Actors/Player/DeathVoice/zero_die.wav",
 	"Axl": "res://src/Actors/Player/DeathVoice/axl_die.wav"
 }
-const DEATH_VOICE_VOLUME_DB := -4.0
+# 보이스가 폭발음(죽는 효과음)을 가리지 않도록 보이스는 줄이고, 보이스가 있는 캐릭터의 폭발음은 키운다
+const DEATH_VOICE_VOLUME_DB := -10.0
+const DEATH_SFX_BOOST_DB := 8.0
 var _death_voice_stream = null
 
 
@@ -30,6 +32,9 @@ func _ready() -> void :
 	var voice_path = DEATH_VOICES.get(character.name, "")
 	if voice_path != "":
 		_death_voice_stream = load(voice_path)
+		var sfx_player = get_node_or_null("audioStreamPlayer")
+		if sfx_player != null:
+			sfx_player.volume_db += DEATH_SFX_BOOST_DB
 
 func _Setup() -> void :
 	Event.emit_signal("player_death")

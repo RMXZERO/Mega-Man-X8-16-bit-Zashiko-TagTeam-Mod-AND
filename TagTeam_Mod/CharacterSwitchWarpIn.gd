@@ -12,7 +12,12 @@ const TAG_VOICES := {
 	"Zero": ["res://TagTeam_Mod/Voices/tag_zero1.wav", "res://TagTeam_Mod/Voices/tag_zero2.wav"],
 	"Axl": ["res://TagTeam_Mod/Voices/axl_tag1.wav", "res://TagTeam_Mod/Voices/axl_tag2.wav"]
 }
-const TAG_VOICE_VOLUME_DB := -4.0
+# 보이스가 태그 효과음(빔 소리)을 가리지 않도록 보이스는 낮추고, 보이스가 있는 캐릭터의 효과음은 살짝 키운다
+const TAG_VOICE_VOLUME_DB := -9.0
+const TAG_SFX_BOOST_DB := 3.0
+# true  : 교대로 '빠지는' 캐릭터의 보이스를 빠지는 순간에 재생 (CharacterSwitchWarpOut 에서 재생)
+# false : 교대로 '등장하는' 캐릭터의 보이스를 등장하는 순간에 재생 (이 파일에서 재생)
+const TAG_VOICE_ON_WARP_OUT := true
 var _tag_voice_streams: Array = []
 var _tag_rng := RandomNumberGenerator.new()
 onready var animatedSprite = get_parent().get_node("animatedSprite")
@@ -27,6 +32,8 @@ func _ready() -> void :
 		var stream = load(path)
 		if stream != null:
 			_tag_voice_streams.append(stream)
+	if not _tag_voice_streams.empty():
+		beam_sound.volume_db += TAG_SFX_BOOST_DB
 
 func on_character_switch_end() -> void:
 	EndAbility()
@@ -37,7 +44,8 @@ func _Setup():
 	descending = true
 	animatedSprite.position.y = position.y - 160
 	beam_sound.play()
-	play_tag_voice()
+	if not TAG_VOICE_ON_WARP_OUT:
+		play_tag_voice()
 
 func play_tag_voice() -> void:
 	if _tag_voice_streams.empty():
