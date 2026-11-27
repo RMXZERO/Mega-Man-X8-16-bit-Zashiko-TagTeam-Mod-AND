@@ -5,6 +5,16 @@ class_name CharacterSwitchWarpIn
 export  var beam_speed: = 420.0
 export  var enable_movement: = true
 var descending: = false
+
+# 태그로 들어올 때(교대 투입) 재생되는 캐릭터별 보이스, 2개 중 랜덤 (캐릭터 루트 노드 이름 기준)
+const TAG_VOICES := {
+	"X": ["res://TagTeam_Mod/Voices/x_tag1.wav", "res://TagTeam_Mod/Voices/x_tag2.wav"],
+	"Zero": ["res://TagTeam_Mod/Voices/tag_zero1.wav", "res://TagTeam_Mod/Voices/tag_zero2.wav"],
+	"Axl": ["res://TagTeam_Mod/Voices/axl_tag1.wav", "res://TagTeam_Mod/Voices/axl_tag2.wav"]
+}
+const TAG_VOICE_VOLUME_DB := -4.0
+var _tag_voice_streams: Array = []
+var _tag_rng := RandomNumberGenerator.new()
 onready var animatedSprite = get_parent().get_node("animatedSprite")
 onready var beam_sound = get_node("audioStreamPlayer")
 
@@ -12,6 +22,11 @@ onready var beam_sound = get_node("audioStreamPlayer")
 func _ready() -> void :
 	animatedSprite.connect("animation_finished", self, "on_animation_finished")
 	Event.listen("character_switch_end", self, "on_character_switch_end")
+	_tag_rng.randomize()
+	for path in TAG_VOICES.get(character.name, []):
+		var stream = load(path)
+		if stream != null:
+			_tag_voice_streams.append(stream)
 
 func on_character_switch_end() -> void:
 	EndAbility()
@@ -22,6 +37,19 @@ func _Setup():
 	descending = true
 	animatedSprite.position.y = position.y - 160
 	beam_sound.play()
+	play_tag_voice()
+
+func play_tag_voice() -> void:
+	if _tag_voice_streams.empty():
+		return
+	var player := AudioStreamPlayer.new()
+	player.pause_mode = Node.PAUSE_MODE_PROCESS   # 교대 중 정지 상태에서도 재생
+	player.stream = _tag_voice_streams[_tag_rng.randi() % _tag_voice_streams.size()]
+	player.bus = "SFX"
+	player.volume_db = TAG_VOICE_VOLUME_DB
+	add_child(player)
+	player.connect("finished", player, "queue_free")
+	player.play()
 
 func _Update(_delta):
 	if descending:
