@@ -11,8 +11,6 @@ const CHARGE_VOICE_VOLUMES_DB := [-2.2, -2.6]
 var _charge_voice_streams: Array = []
 var _charge_voice_player: AudioStreamPlayer = null
 
-
-
 func _ready() -> void :
 	._ready()
 	Event.listen("shot_lemon", self, "on_lemon_shot_created")
@@ -52,6 +50,9 @@ func add_projectile_to_scene(charge_level: int):
 		Event.emit_signal("shot_lemon", self, shot)
 	else:
 		play_charge_voice()
+	shot.damage *= extra_damage
+	shot.damage_to_bosses *= extra_damage
+	shot.damage_to_weakness *= extra_damage
 
 func has_ammo() -> bool:
 	return shots_currently_alive < max_shots_alive

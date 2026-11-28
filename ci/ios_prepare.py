@@ -12,7 +12,7 @@ import os
 import re
 import sys
 
-BUNDLE_ID = os.environ.get("BUNDLE_ID", "com.mmx8.teamtag.ios")
+BUNDLE_ID = os.environ.get("BUNDLE_ID", "com.mmx.allinone.ios")
 TEAM_ID = os.environ.get("TEAM_ID", "AAAAAAAAAA")  # 서명 안 하므로 형식만 맞는 더미
 
 
@@ -107,8 +107,8 @@ application/app_store_team_id="{team}"
 application/identifier="{bundle}"
 application/bundle_identifier="{bundle}"
 icons/app_store_1024x1024="res://ci_icon_1024.png"
-application/short_version="0.9.1"
-application/version="0.9.1"
+application/short_version="1.0.6"
+application/version="1.0.6"
 application/launch_screens_interpolation=0
 application/targeted_device_family=2
 orientation/portrait=false
@@ -174,6 +174,7 @@ const STICK_ACTIVATION_RADIUS = 0.308
 const STICK_DPAD_RING_RADIUS = 0.32
 const WIDE_SCREEN_SAFE_MARGIN = 0.055
 const DIGITAL_THRESHOLD = 0.25
+const SCROLL_SLOP = 3.0  # 이 거리(게임 좌표)보다 끌면 탭이 아니라 스크롤
 const HIT_GROW = 1.5  # 버튼 터치 판정 배율 (그려진 크기 대비)
 const BASE_SIZE = Vector2(398.0, 224.0)  # 게임 기준 해상도 (16:9)
 const ASPECT_STRETCH = 0   # 비율 무시, 화면 전체로 늘림
@@ -214,19 +215,35 @@ var timer: float = 0.0
 var tap_index: int = -1
 var tap_button = null
 var tap_fired: bool = false
+var dbg_idle: float = 0.0          # 타이틀 메뉴에서 입력 없이 지난 시간
+var dbg_armed: bool = true         # 한 번 토글하면, 다른 메뉴에 들어갔다 나올 때까지 다시 토글하지 않음
+var dbg_visited: bool = false      # 토글한 뒤 하위 메뉴에 들어갔다 왔는지
+const DEBUG_IDLE_SEC = 20.0
+var toast_layer = null
+var toast_label = null
+var toast_left: float = 0.0
 var press_pf: Dictionary = {}      # 액션별 눌린 시점의 물리 프레임
 var press_if: Dictionary = {}      # 액션별 눌린 시점의 idle 프레임
 var pending_release: Dictionary = {}  # 게임이 한 번도 못 본 채 떼어진 액션 (보류)
 var last_extra: float = 0.0           # 마지막으로 반영한 '양옆 늘어난 폭의 절반'
+var last_crop: bool = false           # 마지막으로 반영한 4:3 가림막 상태
 var last_aspect: int = -1             # 마지막으로 적용한 stretch aspect
 var crop_layer = null                 # 4:3 모드 가림막 레이어
 var crop_rects: Array = []            # 가림막 (왼쪽, 오른쪽)
+var scroll_node = null                # 손가락으로 끌어 스크롤 중인 ScrollContainer
+var scroll_index: int = -1
+var scroll_start: Vector2 = Vector2.ZERO
+var scroll_origin: float = 0.0
+var scroll_moved: bool = false
+var scroll_drag_block: bool = false   # 스크롤하려고 끈 터치: 버튼 눌림으로 처리하지 않음
 var hud_layers: Array = []            # HUD 레이어들 (4:3 모드에서 가림막 위로 올림)
 
 
 func _ready() -> void:
 	layer = 100
 	pause_mode = Node.PAUSE_MODE_PROCESS
+	if OS.get_name() == "iOS":
+		TranslationServer.set_locale("ko")  # 한국어만 지원
 	canvas = Control.new()
 	canvas.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(canvas)
@@ -258,6 +275,7 @@ func _physics_process(_delta: float) -> void:
 
 func _process(delta: float) -> void:
 	_flush_releases()
+	_debug_idle_tick(delta)
 	timer -= delta
 	if timer > 0.0:
 		return
@@ -306,18 +324,43 @@ func _ensure_crop() -> void:
 	get_tree().root.call_deferred("add_child", crop_layer)
 
 
+# 4:3 영역 양옆을 가리는 폭 (게임 좌표)
+func _crop_bw() -> float:
+	return (BASE_SIZE.x - BASE_SIZE.y * 4.0 / 3.0) * 0.5
+
+
+# 카메라가 쓰는 화면 폭. 4:3 모드에서는 보이는 폭(4:3)만큼만 써서
+# 카메라 한계 끝에서 캐릭터가 가림막(검은 띠) 안으로 들어가지 않게 한다
+func camera_width() -> float:
+	if _crop_active():
+		return BASE_SIZE.y * 4.0 / 3.0
+	return view_width()
+
+
+# 이 레이어를 옮겨야 하는 양 (WIDE 모드의 가운데 정렬 + 4:3 모드에서 HUD 를 보이는 영역 안으로)
+func _layer_extra(l) -> float:
+	var e = wide_extra()
+	if l != null and _crop_active() and hud_layers.has(l):
+		e += _crop_bw()
+	return e
+
+
 func _update_crop() -> void:
 	var on = _crop_active()
 	if on:
 		_ensure_crop()
 	if crop_layer != null and crop_rects.size() == 2:
-		var bw = (BASE_SIZE.x - BASE_SIZE.y * 4.0 / 3.0) * 0.5
-		crop_rects[0].rect_position = Vector2(0.0, 0.0)
-		crop_rects[0].rect_size = Vector2(bw, BASE_SIZE.y)
-		crop_rects[1].rect_position = Vector2(BASE_SIZE.x - bw, 0.0)
-		crop_rects[1].rect_size = Vector2(bw, BASE_SIZE.y)
+		var bw = _crop_bw()
+		# 화면 바깥쪽으로 넉넉히 넓히고 안쪽도 조금 겹치게: 가장자리 반올림 틈으로 게임 화면이 비쳐 보이는 것 방지
+		crop_rects[0].rect_position = Vector2(-32.0, -32.0)
+		crop_rects[0].rect_size = Vector2(bw + 32.0 + 0.75, BASE_SIZE.y + 64.0)
+		crop_rects[1].rect_position = Vector2(BASE_SIZE.x - bw - 0.75, -32.0)
+		crop_rects[1].rect_size = Vector2(bw + 32.0 + 0.75, BASE_SIZE.y + 64.0)
 		crop_rects[0].visible = on
 		crop_rects[1].visible = on
+	if on != last_crop:
+		last_crop = on
+		_refresh_wide()
 	for l in hud_layers:
 		if is_instance_valid(l):
 			if on:
@@ -392,6 +435,8 @@ func _update_layer_transform() -> void:
 # ---- 넓은 화면(WIDE) 모드: 게임의 UI 를 16:9 영역 가운데로 ----
 # 세계(스테이지)는 화면 전체로 넓어지고, HUD/메뉴/대화창은 지금까지처럼 가운데 16:9 영역에 그려진다.
 func _on_node_added(n: Node) -> void:
+	if n is BaseButton:
+		call_deferred("_release_mode_in_scroll", n)
 	if n is CanvasLayer:
 		if n != self and not (n is ParallaxBackground):
 			call_deferred("_adopt_layer", n)
@@ -429,7 +474,7 @@ func _apply_layer(l) -> void:
 	var base = Vector2.ZERO
 	if l.has_meta("wide_base"):
 		base = l.get_meta("wide_base")
-	l.offset = base + Vector2(wide_extra(), 0.0)
+	l.offset = base + Vector2(_layer_extra(l), 0.0)
 	for c in l.get_children():
 		_adopt_control(c)
 
@@ -445,6 +490,9 @@ func _adopt_control(c) -> void:
 	if not is_instance_valid(c) or not (c is Control):
 		return
 	var s = wide_extra()
+	var par = c.get_parent()
+	if par != null and par is CanvasLayer:
+		s = _layer_extra(par)
 	var done = 0.0
 	if c.has_meta("wide_done"):
 		done = c.get_meta("wide_done")
@@ -463,6 +511,23 @@ func _adopt_control(c) -> void:
 		c.rect_position = Vector2(c.rect_position.x - d, c.rect_position.y)
 		c.rect_size = Vector2(c.rect_size.x + 2.0 * d, c.rect_size.y)
 	c.set_meta("wide_done", s)
+
+
+# 스크롤 영역 안의 버튼은 '손가락을 뗄 때' 눌리게 한다 (누르는 순간 눌리면 끌어서 스크롤을 못 함)
+func _release_mode_in_scroll(b) -> void:
+	if not is_instance_valid(b) or not (b is BaseButton) or not b.is_inside_tree():
+		return
+	# 디버그 해금 버튼(타이틀 옵션): 원래 on_press 는 select_special 을 안 누르면 디버그를 꺼 버리므로
+	# 해금 플래그를 꺼 두고, 타이틀에서 20초 동안 가만히 있으면 직접 켜고/끈다 (_debug_idle_tick)
+	if b.get("able_to_unlock_debug") != null:
+		b.able_to_unlock_debug = false
+		return
+	var p = b.get_parent()
+	while p != null:
+		if p is ScrollContainer:
+			b.action_mode = BaseButton.ACTION_MODE_BUTTON_RELEASE
+			return
+		p = p.get_parent()
 
 
 # 화면(뷰포트) 터치 좌표 -> 패드 좌표 (위 레이어 변환의 역변환)
@@ -614,15 +679,38 @@ func _title_flow_active() -> bool:
 	if f == "res://src/Title/IntroCapcom.tscn":
 		# 타이틀 메뉴가 열리기 전(잠겨 있는 동안)만
 		var mm = sc.get_node_or_null("MainMenu")
-		return mm != null and mm.get("locked") == true
+		if mm == null or mm.get("locked") != true:
+			return false
+		# 옵션/키설정/불러오기 같은 하위 메뉴가 열려 있으면 메인메뉴도 잠기는데, 이건 '연출 중'이 아님
+		# (이때 터치마다 pause 를 보내면 옵션 메뉴가 바로 닫혀 버림)
+		return not _submenu_open(mm)
+	return false
+
+
+# mm 아래에 열려 있는(active) 하위 X8Menu(옵션, 키 설정, 불러오기 등)가 있는지
+func _submenu_open(mm: Node) -> bool:
+	for c in mm.get_children():
+		if _has_active_menu(c):
+			return true
+	return false
+
+
+func _has_active_menu(n: Node) -> bool:
+	if n is CanvasLayer and n.get("exit_action") != null and n.get("active") == true:
+		return true
+	for c in n.get_children():
+		if _has_active_menu(c):
+			return true
 	return false
 
 
 func _input(event: InputEvent) -> void:
 	if OS.get_name() != "iOS":
 		return
+	dbg_idle = 0.0
 	if event is InputEventScreenTouch:
 		if event.pressed:
+			scroll_drag_block = false
 			if _title_flow_active():
 				_send_action("pause", true)
 				_send_action("pause", false)
@@ -635,6 +723,7 @@ func _input(event: InputEvent) -> void:
 			if shown:
 				id = _find_control(pp)
 			if id == "":
+				_begin_scroll(event.index, p)
 				_begin_tap(event.index, p)
 				return
 			var cap = {"control": id, "origin": id, "zone": "", "anchor": pp, "current": pp}
@@ -644,6 +733,9 @@ func _input(event: InputEvent) -> void:
 				cap["anchor"] = sfc.position + sfc.size * 0.5  # 스틱 중심 고정
 			captures[event.index] = cap
 		else:
+			if event.index == scroll_index:
+				scroll_node = null
+				scroll_index = -1
 			if event.index == tap_index:
 				_end_tap(event.position)
 			if captures.has(event.index):
@@ -656,6 +748,16 @@ func _input(event: InputEvent) -> void:
 			captures.erase(event.index)
 		_apply()
 	elif event is InputEventScreenDrag:
+		if event.index == scroll_index and scroll_node != null and is_instance_valid(scroll_node):
+			var dy = event.position.y - scroll_start.y
+			if not scroll_moved and abs(dy) > SCROLL_SLOP:
+				scroll_moved = true
+				scroll_drag_block = true
+				_clear_tap()
+			if scroll_moved:
+				scroll_node.scroll_vertical = int(round(scroll_origin - dy))
+				get_tree().set_input_as_handled()
+				return
 		if captures.has(event.index):
 			var cp = captures[event.index]
 			var dp = _to_pad(event.position)
@@ -666,6 +768,35 @@ func _input(event: InputEvent) -> void:
 				if nid != "" and nid != cp["control"]:
 					cp["control"] = nid  # 누른 채 문질러서 다른 버튼 위로 이동
 			_apply()
+
+
+# 손가락을 끌어 올리고 내리는 스크롤 (옵션/불러오기 같은 ScrollContainer)
+func _find_scroll_at(node: Node, p: Vector2):
+	if node == self:
+		return null
+	var kids = node.get_children()
+	for i in range(kids.size() - 1, -1, -1):
+		var f = _find_scroll_at(kids[i], p)
+		if f != null:
+			return f
+	if node is ScrollContainer and node.is_visible_in_tree() and _button_has_point(node, p):
+		var sb = node.get_v_scrollbar()
+		if sb.max_value > sb.page + 1.0:
+			return node
+	return null
+
+
+func _begin_scroll(index: int, p: Vector2) -> void:
+	scroll_node = null
+	scroll_index = -1
+	scroll_moved = false
+	var sc = _find_scroll_at(get_tree().root, p)
+	if sc == null:
+		return
+	scroll_node = sc
+	scroll_index = index
+	scroll_start = p
+	scroll_origin = float(sc.scroll_vertical)
 
 
 # 메뉴의 화살표 같은 X8 버튼을 직접 눌렀을 때: 기본 마우스 에뮬레이션으로 눌리지 않으면 대신 눌러 줌
@@ -715,6 +846,72 @@ func _on_tap_probe() -> void:
 	tap_fired = true
 
 
+# 타이틀 메뉴에서 20초 동안 아무 입력(터치 등) 없이 두면 디버그를 켠다. 다른 메뉴에 들어갔다 나와서
+# 다시 20초 두면 이번엔 끈다. 화면 상단 가운데에 3초 알림.
+func _debug_idle_tick(delta: float) -> void:
+	if toast_left > 0.0:
+		toast_left -= delta
+		if toast_left <= 0.0 and toast_label != null:
+			toast_label.visible = false
+	var sc = get_tree().current_scene
+	var mm = null
+	if sc != null and sc.filename == "res://src/Title/IntroCapcom.tscn":
+		mm = sc.get_node_or_null("MainMenu")
+	if mm == null:
+		dbg_idle = 0.0
+		return
+	if _submenu_open(mm):
+		dbg_idle = 0.0
+		dbg_visited = true  # 옵션/키 설정 같은 하위 메뉴에 들어감
+		return
+	if mm.get("locked") != false:
+		dbg_idle = 0.0  # 타이틀 연출 중
+		return
+	if not dbg_armed:
+		if dbg_visited:
+			dbg_armed = true
+			dbg_visited = false
+		else:
+			return
+	dbg_idle += delta
+	if dbg_idle < DEBUG_IDLE_SEC:
+		return
+	dbg_armed = false
+	dbg_visited = false
+	dbg_idle = 0.0
+	var on = not GameManager.debug_enabled
+	GameManager.debug_enabled = on
+	if not on:
+		Configurations.set("ShowDebug", false)
+	_show_toast("디버그 켜짐" if on else "디버그 꺼짐")
+
+
+func _show_toast(text: String) -> void:
+	if toast_layer == null:
+		toast_layer = CanvasLayer.new()
+		toast_layer.layer = 120
+		toast_layer.pause_mode = Node.PAUSE_MODE_PROCESS
+		add_child(toast_layer)
+		toast_label = Label.new()
+		toast_label.align = Label.ALIGN_CENTER
+		toast_label.valign = Label.VALIGN_CENTER
+		toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var f = load("res://src/Fonts/menuFont.tres")
+		if f != null:
+			toast_label.add_font_override("font", f)
+		toast_label.add_color_override("font_color", Color(1, 1, 1, 1))
+		var sb = StyleBoxFlat.new()
+		sb.bg_color = Color(0, 0, 0, 0.75)
+		toast_label.add_stylebox_override("normal", sb)
+		toast_layer.add_child(toast_label)
+	toast_label.text = text
+	var vs = get_viewport().get_visible_rect().size
+	toast_label.rect_size = Vector2(120.0, 20.0)
+	toast_label.rect_position = Vector2((vs.x - 120.0) * 0.5, 10.0)
+	toast_label.visible = true
+	toast_left = 3.0
+
+
 func _clear_tap() -> void:
 	if tap_button != null and is_instance_valid(tap_button):
 		if tap_button.is_connected("pressed", self, "_on_tap_probe"):
@@ -729,13 +926,14 @@ func _end_tap(p: Vector2) -> void:
 		_clear_tap()
 		return
 	var inside = _button_has_point(b, p)
+	var dragged = scroll_drag_block
 	yield(get_tree(), "idle_frame")
 	yield(get_tree(), "idle_frame")
 	var fired = tap_fired
 	if is_instance_valid(b):
 		if b.is_connected("pressed", self, "_on_tap_probe"):
 			b.disconnect("pressed", self, "_on_tap_probe")
-		if inside and not fired and b.focus_mode != Control.FOCUS_NONE:
+		if inside and not fired and not dragged and b.focus_mode != Control.FOCUS_NONE:
 			if b.is_visible_in_tree():
 				b.grab_focus()
 			b.emit_signal("pressed")
@@ -1040,7 +1238,7 @@ def patch_stretch():
     cam = "src/System/StateCamera.gd"
     _sub(cam, "const width: = 398\n", "var width: = 398.0   # iOS-PORT: 화면 폭 (WIDE 모드에서 넓어짐)\n", "width 상수 -> 변수")
     _sub(cam, "func _process(delta: float) -> void :\n\tvar new_pos: = global_position\n",
-         "func _process(delta: float) -> void :\n\twidth = IOSTouchOverlay.view_width()\n\tvar new_pos: = global_position\n",
+         "func _process(delta: float) -> void :\n\twidth = IOSTouchOverlay.camera_width()\n\tvar new_pos: = global_position\n",
          "매 프레임 폭 갱신")
     _sub(cam,
          "func get_boundary_position_left() -> float:\n\treturn custom_limits_left + float(width) / 2\n"
@@ -1327,7 +1525,7 @@ def patch_ko_extra():
 
 # 타이틀 첫 버튼(새 게임)은 왼쪽/오른쪽 키로 난이도를 고르는데 터치로는 방법이 없음
 # -> 버튼 양옆에 < > 화살표를 붙이고, 탭은 IOSTouchOverlay 가 처리 (난이도를 바꿀 수 있을 때만 보임)
-GAMESTART_MARK = "# iOS-PORT: 터치 난이도 선택"
+GAMESTART_MARK = "# iOS-PORT: 터치 난이도 선택"  # v2: 삼각형 직접 그리기
 
 
 def patch_title_difficulty_touch():
@@ -1352,6 +1550,9 @@ def patch_title_difficulty_touch():
 
 # iOS-PORT: 터치 난이도 선택
 var ios_arrows: Array = []
+# 화살표를 누르는 영역 폭과, 글자 끝에서 화살표 중심까지의 거리 (글자에 바짝 붙도록 작게)
+const IOS_ARROW_W := 28.0
+const IOS_ARROW_PAD := 10.0
 
 
 func _ios_make_arrows() -> void:
@@ -1359,32 +1560,55 @@ func _ios_make_arrows() -> void:
 		return
 	for i in range(2):
 		var a = Label.new()
-		a.text = "<" if i == 0 else ">"
-		a.align = Label.ALIGN_CENTER
-		a.valign = Label.VALIGN_CENTER
+		a.text = ""
 		a.mouse_filter = Control.MOUSE_FILTER_STOP
-		a.rect_position = Vector2(96.0 if i == 0 else 266.0, 0.0)
-		a.rect_size = Vector2(36.0, 16.0)
-		a.add_font_override("font", label.get_font("font"))
-		a.add_color_override("font_color", Color(1, 1, 1, 1))
+		a.rect_size = Vector2(IOS_ARROW_W, 16.0)
 		a.set_meta("dir", -1 if i == 0 else 1)
 		a.add_to_group("ios_title_arrow")
-		a.visible = false
+		a.connect("draw", self, "_ios_draw_arrow", [a])
 		add_child(a)
 		ios_arrows.append(a)
+	_ios_place_arrows()
+
+
+# 지금 표시 중인 난이도 글자의 폭에 맞춰 화살표를 글자 양옆에 붙인다 (엑스 캐릭터에 닿지 않게)
+func _ios_place_arrows() -> void:
+	var half = 24.0
+	var font = label.get_font("font")
+	if font != null:
+		half = font.get_string_size(label.text).x * 0.5
+	var cx = rect_size.x * 0.5
+	for a in ios_arrows:
+		var d = int(a.get_meta("dir"))
+		a.rect_position = Vector2(cx + d * (half + IOS_ARROW_PAD) - IOS_ARROW_W * 0.5, 0.0)
+
+
+# 글자 대신 직접 삼각형으로 그림 (폰트에 < > 가 없거나 색이 묻혀도 항상 보이게)
+func _ios_draw_arrow(a: Control) -> void:
+	var d = int(a.get_meta("dir"))
+	var c = a.rect_size * 0.5
+	var h = 5.0
+	var w = 4.0
+	var pts = PoolVector2Array([
+		c + Vector2(d * w, 0.0),
+		c + Vector2(-d * w, -h),
+		c + Vector2(-d * w, h)])
+	a.draw_colored_polygon(pts, Color(1, 1, 1, 1))
 
 
 func _ios_update_arrows() -> void:
 	if ios_arrows.empty():
 		return
-	var can = (not CharacterManager.game_mode_set) and modes.size() > 1 and is_visible_in_tree() and focus_mode != Control.FOCUS_NONE
+	_ios_place_arrows()
+	var show = modes.size() > 1
+	var can = show and not CharacterManager.game_mode_set
 	var idx = modes.find(CharacterManager.game_mode)
 	for a in ios_arrows:
-		a.visible = can
-		if can:
+		a.visible = show
+		if show:
 			var d = int(a.get_meta("dir"))
-			var ok = (d < 0 and idx > 0) or (d > 0 and idx < modes.size() - 1)
-			a.modulate = Color(1, 1, 1, 1.0 if ok else 0.3)
+			var ok = can and ((d < 0 and idx > 0) or (d > 0 and idx < modes.size() - 1))
+			a.modulate = Color(1, 1, 1, 1.0 if ok else 0.25)
 
 
 func ios_step_mode(d: int) -> void:
@@ -1400,6 +1624,96 @@ func ios_step_mode(d: int) -> void:
     print(f"[ok]   {path}: 터치용 난이도 화살표 추가")
 
 
+def patch_title_version_text():
+    """타이틀 오른쪽 아래 버전 글자를 바꾼다 (표시용 문자열이라 다른 곳에는 영향 없음)."""
+    _sub(os.path.join("src", "Scripts", "GameManager.gd"),
+         'var version: String = "Touch Mod After 3 Ver"',
+         'var version: String = "All In One MOD"',
+         "타이틀 버전 글자")
+
+
+def patch_loading_slot_menu():
+    """불러오기 슬롯: Loading.tscn 에 Pad 컨테이너가 한 단계 더 생겨서, 슬롯의 menu_path(위로 4칸)가
+    불러오기 메뉴 본체가 아니라 Menu 컨트롤을 가리킴 -> 슬롯을 눌러도 loaded_end() 호출이 실패해 로드가 안 됨.
+    Pad 가 있을 때만 위로 5칸으로 고친다."""
+    scene = os.path.join("System", "Screens", "Loading", "Loading.tscn")
+    slot = os.path.join("System", "Screens", "Loading", "SlotButton.tscn")
+    if not (os.path.exists(scene) and os.path.exists(slot)):
+        print("[warn] 불러오기 씬 없음 - 건너뜀")
+        return
+    if 'name="Pad"' not in read(scene):
+        print("[skip] Loading.tscn: Pad 없음 - 슬롯 경로 그대로")
+        return
+    _sub(slot,
+         'menu_path = NodePath("../../../..")',
+         'menu_path = NodePath("../../../../..")',
+         "슬롯 menu_path (Pad 때문에 한 칸 더 위로)")
+
+
+def patch_scroll_touch():
+    """끌어서 스크롤한 터치가 버튼 눌림(옵션 토글, 슬롯 불러오기)으로 처리되지 않게 막는다."""
+    _sub(os.path.join("src", "Options", "Button.gd"),
+         "func _on_pressed() -> void :\n\tif focus_mode == 0:\n\t\treturn\n",
+         "func _on_pressed() -> void :\n\tif focus_mode == 0:\n\t\treturn\n\tif OS.get_name() == \"iOS\" and IOSTouchOverlay.scroll_drag_block:  # iOS-PORT\n\t\treturn\n",
+         "끌어서 스크롤한 터치는 눌림 무시")
+    _sub(os.path.join("System", "Screens", "Loading", "slot_load.gd"),
+         "func _on_pressed() -> void :\n\tmodulate = Color(3, 3, 3, 1)\n",
+         "func _on_pressed() -> void :\n\tif OS.get_name() == \"iOS\" and IOSTouchOverlay.scroll_drag_block:  # iOS-PORT\n\t\treturn\n\tmodulate = Color(3, 3, 3, 1)\n",
+         "슬롯: 끌어서 스크롤한 터치는 눌림 무시")
+
+
+# 언어: 한국어만 선택/사용 가능하게 한다.
+# - project.godot 번역 목록에서 br / es / ja_JP / pr 제거 (영어(en)는 기본 대체 언어라 남겨 둠, 선택 목록에는 안 나옴)
+# - 옵션 'Language' 는 한국어만 돌고, 예전에 저장된 다른 언어 설정이 있어도 한국어로 강제
+LANG_REMOVE = ["br", "es", "ja_JP", "pr"]
+LANG_MARK = "# iOS-PORT: 한국어만"
+
+
+def patch_languages():
+    # 1) 번역 목록에서 다른 언어 제거
+    path = "project.godot"
+    src = read(path)
+    m = re.search(r"(translations=PoolStringArray\()(.*?)(\s*\))", src, re.S)
+    if not m:
+        print("[warn] project.godot 번역 목록을 찾지 못함")
+    else:
+        items = re.findall(r'"([^"]+)"', m.group(2))
+        keep = [t for t in items
+                if not any(t.endswith("real_translations." + l + ".translation") for l in LANG_REMOVE)]
+        if keep == items:
+            print("[skip] project.godot (다른 언어 이미 제거됨)")
+        else:
+            new = ", ".join('"' + t + '"' for t in keep)
+            src = src[:m.start(2)] + " " + new + src[m.end(2):]
+            write(path, src)
+            print(f"[ok]   project.godot 번역 목록: {len(items)}개 -> {len(keep)}개 (" + ", ".join(l for l in LANG_REMOVE) + " 제거)")
+
+    # 2) 옵션 Language: 한국어만
+    path = "src/Options/Language.gd"
+    src = read(path)
+    if LANG_MARK in src:
+        print(f"[skip] {path} (이미 패치됨)")
+        return
+    nl = "\r\n" if "\r\n" in src else "\n"
+    old = "onready var locales := TranslationServer.get_loaded_locales()"
+    if old not in src:
+        print(f"[warn] {path}: locales 줄을 찾지 못함")
+        return
+    src = src.replace(old, LANG_MARK + " (선택 목록)" + nl + 'onready var locales := ["ko"]', 1)
+    i = src.find("func get_current_language():")
+    if i < 0:
+        print(f"[warn] {path}: get_current_language 를 찾지 못함")
+        return
+    src = src[:i] + nl.join([
+        "func get_current_language():",
+        "\t" + LANG_MARK + ": 예전에 저장된 다른 언어 설정이 있어도 한국어",
+        "\treturn \"ko\"",
+        "",
+    ])
+    write(path, src)
+    print(f"[ok]   {path}: 한국어만 선택 가능")
+
+
 if __name__ == "__main__":
     if not os.path.exists("project.godot"):
         sys.exit("[error] 저장소 루트(project.godot가 있는 곳)에서 실행하세요")
@@ -1411,11 +1725,15 @@ if __name__ == "__main__":
     patch_hide_android_controls()
     patch_weaponround_touch()
     patch_title_difficulty_touch()
+    patch_loading_slot_menu()
+    patch_scroll_touch()
+    patch_title_version_text()
     patch_hotswap_onscreen()
     patch_save_version()
     patch_stretch()
     patch_clear_color()
     apply_korean()
     patch_ko_extra()
+    patch_languages()
     patch_tagteam_fonts()
     patch_tagteam_layout()
