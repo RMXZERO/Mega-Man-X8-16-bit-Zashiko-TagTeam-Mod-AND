@@ -34,11 +34,14 @@ func set_tltle() -> void :
 		rockman.visible = false
 	if megaman:
 		megaman.visible = false
+	# 설정값이 아직 없는 첫 실행에서도 로고가 나오게 한다 (IntroANim.gd 와 같은 기본값: 록맨)
+	var use_megaman: bool = false
 	if Configurations.exists("TitleType"):
-		if Configurations.get("TitleType"):
-			if megaman:
-				megaman.visible = true
-		else:
-			if rockman:
-				rockman.visible = true
+		use_megaman = bool(Configurations.get("TitleType"))
+	if use_megaman:
+		if megaman:
+			megaman.visible = true
+	else:
+		if rockman:
+			rockman.visible = true
 
