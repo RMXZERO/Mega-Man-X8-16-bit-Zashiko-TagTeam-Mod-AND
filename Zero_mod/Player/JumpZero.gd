@@ -8,7 +8,6 @@ export  var minimum_upwards_time: = 0.0
 var fullspeed_time: = 0.0
 var slowdown_time: = 0.0
 var stopped_input: = false
-onready var jumpanimatedSprite = get_parent().get_node("animatedSprite")
 
 func _ready() -> void :
 	if active:
@@ -27,22 +26,42 @@ func _EndCondition() -> bool:
 	if _animation in character.saber_animations:
 		if "saber_jump" in _animation:
 			return false
-		if "saber_ensuizan" in _animation:
-			return false
-		if "charge_saber_jump" in _animation:
-			return false
 		return true
 	if character.is_on_floor() and changed_animation:
 		on_touch_floor()
 		return true
 	return false
+
 func get_activation_leeway_time() -> float:
 	if not character.is_executing("Jump"):
 		return leeway_time
 	return 0.0
 
+# Zero 가 점프할 때 나오는 보이스 (캐릭터 루트 노드 이름 기준: Zero)
+# 기존 전투 보이스(제로 콤보 보이스, 실제 재생 기준 약 -14.6dBFS RMS)와 체감 음량을 맞춘 볼륨
+const JUMP_VOICE_PATH := "res://src/Actors/Player/JumpVoice/zero_jump.wav"
+const JUMP_VOICE_VOLUME_DB := -3.1
+
+func play_jump_voice() -> void :
+	if character == null or character.name != "Zero":
+		return
+	# 점프 / 대시점프 / 벽차기 등이 같은 플레이어 노드를 공유한다
+	var voice_player = character.get_node_or_null("JumpVoice")
+	if voice_player == null:
+		var stream = load(JUMP_VOICE_PATH)
+		if stream == null:
+			return
+		voice_player = AudioStreamPlayer.new()
+		voice_player.name = "JumpVoice"
+		voice_player.stream = stream
+		voice_player.bus = "Voice"
+		voice_player.volume_db = JUMP_VOICE_VOLUME_DB
+		character.add_child(voice_player)
+	voice_player.play()
+
 func _Setup() -> void :
 	emit_jump_signal()
+	play_jump_voice()
 	fullspeed_time = 0
 	slowdown_time = 0
 	changed_animation = false
@@ -57,9 +76,6 @@ func _Update(_delta: float) -> void :
 	if_no_input_zero_vertical_speed()
 	ascent_with_slowdown_after_delay(_delta)
 	._Update(_delta)
-	if jumpanimatedSprite.animation == "jump":
-		if jumpanimatedSprite.frame >= 15:
-			jumpanimatedSprite.frame = 3
 
 func if_no_input_zero_vertical_speed() -> void :
 	if character.get_vertical_speed() < 0:
